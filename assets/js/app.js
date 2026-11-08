@@ -55,19 +55,30 @@
   function addDays(n) { var d = new Date(); d.setDate(d.getDate() + n); return fmtDue(d); }
   function uid(p) { return p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
 
-  /* ================= 用户认证（管理者 / 读者 双身份） =================
-   * 账号数据存于服务端 data/users.json（密码加盐哈希，不存明文），
-   * 前端仅保存服务端签发的 HMAC token（7 天有效）。
+  /* ================= 用户认证（云服务 · 与云图书馆同源） =================
+   * WorkBuddy 云服务 Auth：手机号 + 短信验证码登录（新号自动注册）、微信扫码登录，
+   * 会话由云端管理、自动随请求携带；管理员身份存于云数据库 yuedu_staff，
+   * 登录后通过「管理员认证」输入口令开通（口令校验在云端安全函数内完成）。
    * 读者：预约借阅 · 我的借阅 · 书评评分 · 选座签到；
    * 管理员：以上全部 + 「我的借阅」扫码借还工作台与预约核销。   */
-  function authSave(token) { try { localStorage.setItem('yuedu-token', token); } catch (e) {} }
-  function authClear() { try { localStorage.removeItem('yuedu-token'); } catch (e) {} }
-  function authToken() { try { return localStorage.getItem('yuedu-token') || ''; } catch (e) { return ''; } }
+  var cloud = window.WorkBuddyCloud ? window.WorkBuddyCloud.createWorkBuddyCloud({
+    endpoint: 'https://yuedu-library.app.workbuddy.host',
+    oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
+    publishableKey: 'wbpk_uhGNjNnaJayLlBMt0hET0E_LGyeTXb97yIFGdKfj6c4rqaf068pBBOr'
+  }) : null;
+
+  function userLabel(u) {
+    if (!u) return '未登录';
+    if (u.name) return u.name;
+    if (u.phone) return u.phone.length === 11 ? u.phone.slice(0, 3) + '****' + u.phone.slice(7) : u.phone;
+    if (u.email) return u.email.split('@')[0];
+    return '读者';
+  }
   function isAdmin() { return !!(S.user && S.user.role === 'admin'); }
   function requireLogin(what) {
     if (S.user) return true;
-    toast('请先登录' + (what ? '后再' + what : '') + ' · 右上角登录 / 注册');
-    openAuth('login');
+    toast('请先登录' + (what ? '后再' + what : '') + ' · 右上角登录');
+    openAuth();
     return false;
   }
 
@@ -76,11 +87,11 @@
     if (!el) return;
     if (S.user) {
       el.classList.add('logged');
-      el.innerHTML = '<span class="avatar">' + esc(S.user.nickname.charAt(0)) + '</span>' +
-        '<span class="uc-name">' + esc(S.user.nickname) + '</span>' +
-        '<span class="role-badge' + (S.user.role === 'admin' ? ' is-admin' : '') + '">' +
-        (S.user.role === 'admin' ? '管理员' : '读者') + '</span>' +
-        '<button class="uc-btn" data-auth="pass">改密</button>' +
+      el.innerHTML = '<span class="avatar">' + esc(S.user.label.charAt(0)) + '</span>' +
+        '<span class="uc-name">' + esc(S.user.label) + '</span>' +
+        '<span class="role-badge' + (isAdmin() ? ' is-admin' : '') + '">' +
+        (isAdmin() ? '管理员' : '读者') + '</span>' +
+        (isAdmin() ? '' : '<button class="uc-btn" data-auth="admin">管理员认证</button>') +
         '<button class="uc-btn" data-auth="logout">退出</button>';
     } else {
       el.classList.remove('logged');
@@ -88,113 +99,199 @@
     }
   }
 
-  function openAuth(mode, notice) {
-    mode = mode || 'login';
-    var tabs = '<div class="auth-tabs">' +
-      '<button class="auth-tab' + (mode === 'login' ? ' on' : '') + '" data-authtab="login">登 录</button>' +
-      '<button class="auth-tab' + (mode === 'register' ? ' on' : '') + '" data-authtab="register">注 册</button></div>';
-    var noticeHtml = notice ? '<p class="auth-notice">' + esc(notice) + '</p>' : '';
-    var body;
-    if (mode === 'register') {
-      body = tabs + noticeHtml +
-        '<div class="auth-form">' +
-        '<label>用户名<input id="authUser" maxlength="20" placeholder="2–20 位中文 / 字母 / 数字 / 下划线" autocomplete="username"></label>' +
-        '<label>昵称（选填）<input id="authNick" maxlength="20" placeholder="书评与借阅记录中展示"></label>' +
-        '<label>密码<input id="authPass" type="password" maxlength="40" placeholder="至少 6 位" autocomplete="new-password"></label>' +
-        '<label>确认密码<input id="authPass2" type="password" maxlength="40" placeholder="再输入一次" autocomplete="new-password"></label>' +
-        '<button class="btn btn-primary btn-block" data-authdo="register">注 册</button>' +
-        '<p class="auth-note">注册即成为「读者」身份：可预约借阅、管理我的借阅、发布书评、选座签到。<br>管理员账号由馆方开设，请切换到「登录」。</p></div>';
-    } else {
-      body = tabs + noticeHtml +
-        '<div class="auth-form">' +
-        '<label>用户名<input id="authUser" maxlength="20" placeholder="用户名" autocomplete="username"></label>' +
-        '<label>密码<input id="authPass" type="password" maxlength="40" placeholder="密码" autocomplete="current-password"></label>' +
-        '<button class="btn btn-primary btn-block" data-authdo="login">登 录</button>' +
-        '<p class="auth-note">读者：预约借阅 · 我的借阅 · 书评评分 · 选座签到<br>管理员：以上全部 + 扫码借还工作台与预约核销</p></div>';
-    }
-    modal(mode === 'register' ? '注册读者账号' : '登录 · 悦读', body);
-    var u = document.getElementById('authUser');
-    if (u) u.focus();
+  function authMsg(msg, ok) {
+    var el = document.getElementById('authErr');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? '' : 'none';
+    el.classList.toggle('ok', !!ok);
   }
 
-  var AUTH_LABELS = { login: '登 录', register: '注 册', pass: '确认修改' };
+  function openAuth() {
+    if (!cloud) {
+      modal('登录 · 悦读', '<p class="auth-notice">云服务组件未加载，请检查网络后刷新页面重试。</p>');
+      return;
+    }
+    modal('登录 · 悦读',
+      '<p class="auth-notice" id="authErr" style="display:none"></p>' +
+      '<div class="auth-form">' +
+      '<label>手机号<input id="authPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号 · 新号验证后自动注册" autocomplete="tel"></label>' +
+      '<label>短信验证码<span class="code-row"><input id="authCode" maxlength="8" placeholder="4–8 位验证码" autocomplete="one-time-code"><button type="button" class="btn btn-outline" data-authdo="sendcode">获取验证码</button></span></label>' +
+      '<button class="btn btn-primary btn-block" data-authdo="otp">登 录 / 注 册</button>' +
+      '<button class="btn btn-outline btn-block" data-authdo="wechat">微信扫码登录</button>' +
+      '<p class="auth-note">读者登录后：预约借阅 · 我的借阅 · 书评评分 · 选座签到<br>管理员：登录后点右上角「管理员认证」输入口令开通，可使用扫码借还工作台与预约核销</p></div>');
+    var p = document.getElementById('authPhone');
+    if (p) p.focus();
+  }
+
+  function startCountdown(sec) {
+    var btn = document.querySelector('[data-authdo="sendcode"]');
+    if (!btn) return;
+    var left = sec;
+    btn.disabled = true; btn.textContent = left + 's 后重发';
+    clearInterval(codeTimer);
+    codeTimer = setInterval(function () {
+      left--;
+      if (left <= 0) { clearInterval(codeTimer); btn.disabled = false; btn.textContent = '获取验证码'; return; }
+      btn.textContent = left + 's 后重发';
+    }, 1000);
+  }
+
+  var pendingOtp = null, codeTimer = null, authBusyFlag = false;
+
+  async function sendPhoneCode() {
+    if (authBusyFlag) return;
+    var phone = (document.getElementById('authPhone') || {}).value || '';
+    phone = phone.trim();
+    if (!/^1\d{10}$/.test(phone)) { authMsg('请输入正确的 11 位手机号'); return; }
+    authMsg('');
+    authBusyFlag = true;
+    var btn = document.querySelector('[data-authdo="sendcode"]');
+    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
+    try {
+      var sent = await cloud.auth.sendOtp({ phone: phone });
+      if (sent.error) throw sent.error;
+      pendingOtp = { phone: phone, verificationId: sent.data.verificationId, isExistingUser: !!sent.data.isExistingUser };
+      startCountdown(60);
+      authMsg('验证码已发送' + (pendingOtp.isExistingUser ? '' : '，新手机号将自动注册'), true);
+      var c = document.getElementById('authCode');
+      if (c) c.focus();
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '获取验证码'; }
+      authMsg('验证码发送失败：' + (err && err.message ? err.message : '请稍后再试'));
+    }
+    authBusyFlag = false;
+  }
+
+  async function submitPhoneLogin() {
+    if (authBusyFlag) return;
+    var phone = ((document.getElementById('authPhone') || {}).value || '').trim();
+    var token = ((document.getElementById('authCode') || {}).value || '').trim();
+    var pending = pendingOtp;
+    if (!pending || pending.phone !== phone) { authMsg('请先为当前手机号获取验证码'); return; }
+    if (!/^\d{4,8}$/.test(token)) { authMsg('请输入收到的短信验证码'); return; }
+    authMsg('');
+    authBusyFlag = true;
+    var btn = document.querySelector('[data-authdo="otp"]');
+    if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+    try {
+      var done = await cloud.auth.verifyOtp({
+        phone: pending.phone, verificationId: pending.verificationId,
+        isExistingUser: pending.isExistingUser, token: token
+      });
+      if (done.error) throw done.error;
+      pendingOtp = null;
+      await afterSignIn(done.data && done.data.user);
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '登 录 / 注 册'; }
+      authMsg('登录失败：' + (err && err.message ? err.message : '请稍后再试'));
+    }
+    authBusyFlag = false;
+  }
+
+  async function wechatLogin() {
+    if (!cloud || typeof cloud.auth.signInWithOAuth !== 'function') { authMsg('当前版本暂不支持微信登录'); return; }
+    try {
+      var back = new URL(location.href);
+      back.pathname = '/';
+      ['code', 'state', 'provider'].forEach(function (k) { back.searchParams.delete(k); });
+      var r = await cloud.auth.signInWithOAuth({ provider: 'wechat', redirectTo: back.toString() });
+      if (r.error) throw r.error;
+      if (r.data && r.data.url) location.assign(r.data.url);
+      else authMsg('未获取到微信授权跳转地址');
+    } catch (err) {
+      authMsg('微信登录暂不可用：' + (err && err.message ? err.message : '微信授权需在正式发布域名下使用'));
+    }
+  }
+
+  async function afterSignIn(u) {
+    if (!u) throw new Error('登录会话建立失败');
+    S.user = { id: String(u.id || ''), label: userLabel(u), role: 'reader' };
+    await refreshRole();
+    clearInterval(codeTimer);
+    closeModal();
+    renderUserChip(); renderAll();
+    toast('欢迎，' + S.user.label + (isAdmin() ? '（管理员）' : ''));
+  }
+
+  async function refreshRole() {
+    if (!S.user || !cloud) return;
+    try {
+      var r = await cloud.database.from('yuedu_staff').select('owner_id').eq('owner_id', S.user.id).maybeSingle();
+      S.user.role = (!r.error && r.data) ? 'admin' : 'reader';
+    } catch (e) { S.user.role = 'reader'; }
+  }
+
+  async function doLogout() {
+    if (cloud) { try { await cloud.auth.signOut(); } catch (e) { /* 忽略 */ } }
+    S.user = null; renderUserChip(); renderAll();
+    toast('已退出登录');
+  }
+
+  /* OAuth 回调分发（微信 / WorkBuddy 授权返回）：普通访问直接跳过 */
+  async function handleOAuthCallback() {
+    if (!cloud) return false;
+    var url = new URL(location.href);
+    if (!url.searchParams.has('code') && !url.searchParams.has('error')) return false;
+    var provider = url.searchParams.get('provider');
+    if (provider !== 'wechat' && provider !== 'workbuddy') return false;
+    var handle = provider === 'wechat' ? cloud.auth.handleWechatWebCallback : cloud.auth.handleWorkBuddyCallback;
+    if (typeof handle !== 'function') return false;
+    var r = await handle.call(cloud.auth);
+    if (r && !r.error && r.data) {
+      ['code', 'state', 'provider'].forEach(function (k) { url.searchParams.delete(k); });
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+      await afterSignIn(r.data.user || (r.data.session && r.data.session.user));
+      return true;
+    }
+    if (r && r.error) toast('授权登录失败：' + r.error.message);
+    return false;
+  }
+
+  /* 启动时恢复会话：云端 getSession + 管理员身份判定 */
+  async function restoreSession() {
+    if (!cloud) { renderUserChip(); return; }
+    try {
+      if (await handleOAuthCallback()) return;
+      var r = await cloud.auth.getSession();
+      var s = r && r.data;
+      if (s && s.user) {
+        S.user = { id: String(s.user.id || ''), label: userLabel(s.user), role: 'reader' };
+        await refreshRole();
+      }
+    } catch (e) { /* 云服务不可达：保持未登录，站点浏览不受影响 */ }
+    renderUserChip();
+  }
+
+  /* 管理员认证：口令校验在云端安全函数 yuedu_claim_admin 内完成 */
+  function openClaimModal() {
+    if (!S.user) return;
+    modal('管理员认证',
+      '<div class="auth-form">' +
+      '<label>管理员口令<input id="claimCode" type="password" maxlength="40" placeholder="请向馆方获取管理员口令"></label>' +
+      '<button class="btn btn-primary btn-block" data-authdo="claim">认证为管理员</button>' +
+      '<p class="auth-note">认证通过后可使用「我的借阅」扫码借还工作台与预约核销。</p></div>');
+  }
+  var AUTH_LABELS = { claim: '认证为管理员' };
   function authBusy(on, kind) {
     var b = document.querySelector('[data-authdo="' + kind + '"]');
     if (b) { b.disabled = on; b.textContent = on ? '请稍候…' : AUTH_LABELS[kind]; }
   }
-
-  async function doAuth(kind) {
-    var uEl = document.getElementById('authUser'), pEl = document.getElementById('authPass');
-    var username = uEl ? uEl.value.trim() : '', password = pEl ? pEl.value : '';
-    if (!username || !password) { toast('请输入用户名与密码'); return; }
-    var body = { username: username, password: password };
-    if (kind === 'register') {
-      var nickEl = document.getElementById('authNick'), p2El = document.getElementById('authPass2');
-      if ((p2El ? p2El.value : '') !== password) { toast('两次输入的密码不一致'); return; }
-      body.nickname = ((nickEl && nickEl.value) || '').trim();
-    }
-    authBusy(true, kind);
+  async function claimAdmin() {
+    if (!cloud || !S.user) return;
+    var code = ((document.getElementById('claimCode') || {}).value || '').trim();
+    if (!code) { toast('请输入管理员口令'); return; }
+    authBusy(true, 'claim');
     try {
-      var r = await fetch('/api/auth/' + kind, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-      });
-      var data = await r.json().catch(function () { return {}; });
-      if (!data.ok) throw new Error(data.error || ('请求失败（HTTP ' + r.status + '）'));
-      authSave(data.token);
-      S.user = data.user;
-      closeModal();
-      toast('欢迎' + (kind === 'register' ? '注册，读者' : '') + '，' + S.user.nickname +
-        (S.user.role === 'admin' ? '（管理员）' : ''));
-      renderUserChip(); renderAll();
+      var r = await cloud.database.rpc('yuedu_claim_admin', { p_code: code });
+      if (r.error) throw r.error;
+      S.user.role = 'admin';
+      closeModal(); renderUserChip(); renderAll();
+      toast('管理员认证成功');
     } catch (err) {
-      toast(err && err.message ? err.message : '登录服务不可用，请通过 node server.js 访问本站');
-      authBusy(false, kind);
+      toast((err && err.message) ? err.message : '认证失败，请稍后再试');
+      authBusy(false, 'claim');
     }
-  }
-
-  function doLogout() {
-    S.user = null; authClear(); renderUserChip(); renderAll();
-    toast('已退出登录');
-  }
-
-  function openPassModal() {
-    if (!S.user) return;
-    modal('修改密码',
-      '<div class="auth-form">' +
-      '<label>原密码<input id="passOld" type="password" maxlength="40" autocomplete="current-password"></label>' +
-      '<label>新密码<input id="passNew" type="password" maxlength="40" placeholder="至少 6 位" autocomplete="new-password"></label>' +
-      '<label>确认新密码<input id="passNew2" type="password" maxlength="40" autocomplete="new-password"></label>' +
-      '<button class="btn btn-primary btn-block" data-authdo="pass">确认修改</button></div>');
-  }
-  async function doChangePassword() {
-    var o = document.getElementById('passOld'), n = document.getElementById('passNew'), n2 = document.getElementById('passNew2');
-    if (!o || !n) return;
-    if (n.value !== (n2 ? n2.value : '')) { toast('两次输入的新密码不一致'); return; }
-    authBusy(true, 'pass');
-    try {
-      var r = await fetch('/api/auth/password', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: authToken(), oldPassword: o.value, newPassword: n.value })
-      });
-      var data = await r.json().catch(function () { return {}; });
-      if (!data.ok) throw new Error(data.error || '修改失败');
-      closeModal(); toast('密码已修改，请妥善保管');
-    } catch (err) {
-      toast(err && err.message ? err.message : '修改失败');
-      authBusy(false, 'pass');
-    }
-  }
-
-  /* 启动时恢复会话：本地 token → 服务端校验 */
-  async function restoreSession() {
-    var t = authToken();
-    if (!t) { renderUserChip(); return; }
-    try {
-      var r = await fetch('/api/auth/me?token=' + encodeURIComponent(t));
-      var data = await r.json().catch(function () { return {}; });
-      if (data.ok) S.user = data.user; else authClear();
-    } catch (e) { /* 服务未启动：保持未登录，站点功能不受影响 */ }
-    renderUserChip();
   }
 
   /* ---------------- 日期 ---------------- */
@@ -527,7 +624,7 @@
       [{ label: b.stock > 0 ? '预约借阅' : '排队预约', primary: true, onClick: function () { reservePickup(id); } }, { label: '关闭' }]);
   }
   function readerName() {
-    if (S.user) return S.user.nickname;
+    if (S.user) return S.user.label;
     try { return localStorage.getItem('yuedu-reader-name') || ''; } catch (e) { return ''; }
   }
   function postReview(bookId) {
@@ -535,7 +632,7 @@
     var rating = S.revDraft && S.revDraft.bookId === bookId ? S.revDraft.rating : 0;
     if (!rating) { toast('请先点选评分星级'); return; }
     var nameEl = document.getElementById('revName'), textEl = document.getElementById('revText');
-    var name = ((nameEl && nameEl.value) || '').trim() || (S.user ? S.user.nickname : '匿名读者');
+    var name = ((nameEl && nameEl.value) || '').trim() || (S.user ? S.user.label : '匿名读者');
     var text = ((textEl && textEl.value) || '').trim();
     if (!S.user) { try { localStorage.setItem('yuedu-reader-name', name); } catch (e) { /* 隐私模式忽略 */ } }
     YueDuDB.commit({
@@ -605,8 +702,8 @@
       if (man0) man0.style.display = 'none';
       box.innerHTML = '<div class="scan-idle admin-gate"><b>工作人员操作台 · 仅限管理员使用</b><br>' +
         (S.user
-          ? '您当前是「读者」身份，借出 / 归还核销请由馆内管理员办理'
-          : '请先在右上角登录管理员账号（默认 admin / admin123）') + '</div>';
+          ? '您当前是「读者」身份，可点右上角「管理员认证」输入口令开通'
+          : '请先在右上角登录，再通过「管理员认证」开通操作台') + '</div>';
       return;
     }
     var manEl = document.querySelector('.manual-locate');
@@ -718,20 +815,64 @@
   /* 识别提示词：兼容三种拍摄对象 —— ①粘贴的图书标签 ②图书封面 ③书脊 */
   var BOOK_PROMPT = '这是一张图书馆相关的照片，可能是以下三种之一：①贴在书上的标签（印有书名，可能带书名号《》，并可能标注状态文字如"借阅""借出""归还""在库"）；②图书封面（书名印在封面上）；③书脊（书名竖排或横排印在书脊上）。请识别照片中出现的图书书名。照片中若出现多本书，只取最清晰、最居中的那一本。只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","source":"label或cover或spine，标明书名来自标签、封面还是书脊","status":"标签上的状态文字，没有则为空字符串","confidence":"high或medium或low"}';
 
+  /* 识别链路：优先走云服务内置视觉大模型（免密钥，混元等，任意来源页面均可直连），
+   * 云端不可用时回退本机 /api/vision 代理（须通过 node server.js 访问）。 */
+  var visionModelsCache = null;
+  async function pickVisionModel() {
+    if (!cloud) return null;
+    if (visionModelsCache) return visionModelsCache;
+    try {
+      var list = await cloud.llm.models.list();
+      visionModelsCache = (list || []).filter(function (m) { return m.supportsImages === true && m.disabled !== true; });
+    } catch (e) { visionModelsCache = []; }
+    return visionModelsCache;
+  }
+  async function visionViaCloud(dataUrl) {
+    var models = await pickVisionModel();
+    if (!models || !models.length) throw new Error('云端视觉模型暂不可用');
+    /* 优先混元系列（hy*），其次 GLM 视觉模型；auto 为路由模型，图像识别不稳，排除 */
+    var model = models.find(function (m) { return /^hy/.test(m.id); }) ||
+      models.find(function (m) { return /vision|4\.6v|vl/i.test(m.id); }) ||
+      models.find(function (m) { return m.id !== 'auto'; }) || models[0];
+    var answer = '';
+    for await (const chunk of cloud.llm.chat.completions.create({
+      model: model.id,
+      messages: [
+        { role: 'system', content: '你是图书馆的图书识别助手。只输出一个 JSON 对象，不要任何解释文字或 markdown 代码块。' },
+        { role: 'user', content: [
+          { type: 'text', text: BOOK_PROMPT },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ] }
+      ],
+      stream: true
+    })) {
+      var d = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+      if (d && d.content) answer += d.content;
+    }
+    if (!answer) throw new Error('云端识别未返回内容');
+    return answer;
+  }
+
   async function recognizeScan(dataUrl) {
     var sc = S.scan;
     if (sc.busy) return;
     sc.busy = true; sc.matched = null; sc.error = null; sc.raw = '';
     renderScan();
     try {
-      var r = await fetch('/api/vision', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, prompt: BOOK_PROMPT })
-      });
-      var data = await r.json().catch(function () { return {}; });
-      if (!data.ok) throw new Error(data.error || ('识别服务不可用（HTTP ' + r.status + '）'));
-      applyScanResult(String(data.content || ''));
+      var content;
+      try {
+        content = await visionViaCloud(dataUrl);
+      } catch (eCloud) {
+        var r = await fetch('/api/vision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl, prompt: BOOK_PROMPT })
+        });
+        var data = await r.json().catch(function () { return {}; });
+        if (!data.ok) throw new Error(data.error || ('识别服务不可用（HTTP ' + r.status + '）'));
+        content = data.content;
+      }
+      applyScanResult(String(content || ''));
     } catch (err) {
       sc.busy = false;
       sc.error = '识别失败：' + (err && err.message ? err.message : '网络异常') + '。可用下方「手动定位」输入书名完成登记。';
@@ -1009,23 +1150,22 @@
       var hot = t.closest('[data-hot]');
       if (hot) { S.query = hot.dataset.hot; S.pageNo = 1; $('#searchInput').value = S.query; renderResults(); toast('热门检索：' + S.query); return; }
 
-      /* ---- 用户认证入口（登录 / 注册 / 退出 / 改密） ---- */
+      /* ---- 用户认证入口（登录 / 退出 / 管理员认证） ---- */
       var at = t.closest('[data-auth]');
       if (at) {
         var av = at.dataset.auth;
-        if (av === 'open') openAuth('login');
+        if (av === 'open') openAuth();
         else if (av === 'logout') doLogout();
-        else if (av === 'pass') openPassModal();
+        else if (av === 'admin') openClaimModal();
         return;
       }
-      var atab = t.closest('[data-authtab]');
-      if (atab) { openAuth(atab.dataset.authtab); return; }
       var ado = t.closest('[data-authdo]');
       if (ado) {
         var ak = ado.dataset.authdo;
-        if (ak === 'login') doAuth('login');
-        else if (ak === 'register') doAuth('register');
-        else if (ak === 'pass') doChangePassword();
+        if (ak === 'sendcode') sendPhoneCode();
+        else if (ak === 'otp') submitPhoneLogin();
+        else if (ak === 'wechat') wechatLogin();
+        else if (ak === 'claim') claimAdmin();
         return;
       }
 
