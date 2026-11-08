@@ -54,8 +54,13 @@
         { id: 'b12', title: '浮生六记', author: '[清] 沈复 著', publisher: '人民文学出版社', year: 2010, callNo: 'I264.9/51', category: '文 学', location: '一层开架阅览室', shelf: '在架 2 册', stock: 2, total: 4, state: '可借', spine: '浮生六记', color: '#9E3B32', hot: 83 }
       ],
       loans: [
-        { id: 'l-seed-1', bookId: 'b1', title: '陶庵梦忆', due: '11.22', renewable: true, createdAt: 0 },
-        { id: 'l-seed-2', bookId: 'b5', title: '万历十五年', due: '11.15', renewable: true, createdAt: 0 }
+        { id: 'l-seed-1', bookId: 'b1', title: '陶庵梦忆', due: '11.22', renewable: true, code: 'RT-7E2K9A', createdAt: 0 },
+        { id: 'l-seed-2', bookId: 'b5', title: '万历十五年', due: '11.15', renewable: true, code: 'RT-3B8M4C', createdAt: 0 }
+      ],
+      reviews: [
+        { id: 'rv-seed-1', bookId: 'b1', user: '墨痕', rating: 5, content: '张岱的文字里有晚明的月光，繁华落尽后追忆，字字皆是深情。', time: 1762483200000 },
+        { id: 'rv-seed-2', bookId: 'b5', user: '青简', rating: 4, content: '大历史观下的万历十五年，几个人物的切片竟能照见整个王朝的困局。', time: 1762569600000 },
+        { id: 'rv-seed-3', bookId: 'b12', user: '南山', rating: 5, content: '浮生若梦，为欢几何。沈复与芸娘的日常，是中国文学里最动人的烟火气。', time: 1762656000000 }
       ],
       reservations: [],
       pickups: [],
@@ -117,6 +122,20 @@
       case 'checkin':
         r = (db.reservations || []).find(function (x) { return x.id === ev.resvId; });
         if (r) { r.checkedIn = true; r.checkinTime = ev.time; }
+        break;
+      case 'review': {
+        /* 书评评分：同一读者对同一本书仅保留最新一条（再次提交视为修改） */
+        db.reviews = db.reviews || [];
+        var it = ev.item;
+        if (!it || !it.bookId || !(it.rating >= 1 && it.rating <= 5)) break;
+        db.reviews = db.reviews.filter(function (x) {
+          return !(x.bookId === it.bookId && x.user === it.user && x.id !== it.id);
+        });
+        if (!db.reviews.some(function (x) { return x.id === it.id; })) db.reviews.push(it);
+        break;
+      }
+      case 'review-del':
+        db.reviews = (db.reviews || []).filter(function (x) { return x.id !== ev.reviewId; });
         break;
       case 'pickup':
         /* 预约借阅：线上预约，不占库存，到馆核销后才真正借出 */
@@ -284,6 +303,7 @@
         if (snapshot && snapshot.v === 2 && snapshot.db && snapshot.db.version) {
           cache = snapshot.db;
           cache.pickups = cache.pickups || [];   // 旧快照迁移：补预约集合
+          cache.reviews = cache.reviews || [];   // 旧快照迁移：补书评集合
           seen = snapshot.seen || [];
           pending = snapshot.pending || [];
           seen.forEach(function (id) { seenMap[id] = 1; });

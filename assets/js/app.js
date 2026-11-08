@@ -16,7 +16,7 @@
     forecastSlot: 'pm', room: '三层古籍阅览室',
     picked: ['C-04', 'C-05'], fav: ['D-03'],
     seeded: false,
-    scan: { mode: 'borrow', stream: null, busy: false, matched: null, status: '', raw: '', error: null }
+    scan: { mode: 'borrow', stream: null, busy: false, matched: null, status: '', raw: '', error: null, pendingReturn: null }
   };
   var ROOMS = ['一层开架阅览室', '三层古籍阅览室', '四层特藏室'];
   var ROWS = ['A', 'B', 'C', 'D', 'E'];
@@ -74,11 +74,14 @@
 
   /* ---------------- 首页：榜单 / 公告 / 借阅 ---------------- */
   function renderRank() {
-    var books = YueDuDB.get().books.slice().sort(function (a, b) { return b.hot - a.hot; }).slice(0, 3);
+    var db = YueDuDB.get();
+    var books = db.books.slice().sort(function (a, b) { return b.hot - a.hot; }).slice(0, 3);
     $('#rankList').innerHTML = books.map(function (b, i) {
+      var ri = ratingInfo(db, b.id);
       return '<li><span class="rank-num">' + '一二三'[i] + '</span>' +
-        '<div class="rank-body"><strong>《' + esc(b.title) + '》</strong>' +
-        '<small>' + esc(b.author) + ' · ' + esc(b.publisher) + ' · ' + esc(b.callNo) + '</small></div>' +
+        '<div class="rank-body"><strong><a href="javascript:void(0)" data-book="' + b.id + '" title="查看详情与书评">《' + esc(b.title) + '》</a></strong>' +
+        '<small>' + esc(b.author) + ' · ' + esc(b.publisher) + ' · ' + esc(b.callNo) +
+        (ri.count ? ' · ★' + ri.avg.toFixed(1) + '（' + ri.count + ' 评）' : '') + '</small></div>' +
         '<div class="rank-side">在架 ' + b.stock + ' 册' +
         '<button data-borrow="' + b.id + '">' + (b.stock > 0 ? '预约借阅' : '排队预约') + '</button></div></li>';
     }).join('');
@@ -171,15 +174,21 @@
     var start = (S.pageNo - 1) * S.perPage;
     var list = all.slice(start, start + S.perPage);
     $('#resultCount').textContent = total;
+    var db = YueDuDB.get();
     $('#resultList').innerHTML = list.length ? list.map(function (b, i) {
       var spine = b.spine || b.title;
       var half = Math.ceil(spine.length / 2);
+      var ri = ratingInfo(db, b.id);
       return '<article class="result-card" style="animation-delay:' + (i * 45) + 'ms">' +
         '<div class="book-spine" style="background:' + b.color + '">' + esc(spine.slice(0, half)) + '<br>' + esc(spine.slice(half)) + '</div>' +
-        '<div class="rc-body"><h3>《' + esc(b.title) + '》</h3>' +
+        '<div class="rc-body"><h3><a href="javascript:void(0)" data-book="' + b.id + '" title="查看详情与书评">《' + esc(b.title) + '》</a></h3>' +
         '<p class="rc-meta">' + esc(b.author) + ' · ' + esc(b.publisher) + ' ' + b.year + ' · ' + esc(b.callNo) + '</p>' +
         '<p class="rc-meta">' + esc(b.location) + ' · ' + esc(b.shelf) +
-        ' <em>·</em> <span class="' + (b.stock > 0 ? 'ok' : 'no') + '">' + (b.stock > 0 ? '可借' : '已借出') + '</span></p></div>' +
+        ' <em>·</em> <span class="' + (b.stock > 0 ? 'ok' : 'no') + '">' + (b.stock > 0 ? '可借' : '已借出') + '</span></p>' +
+        '<p class="rc-rate">' + (ri.count
+          ? starsHTML(ri.avg) + '<b>' + ri.avg.toFixed(1) + '</b><span>' + ri.count + ' 条书评</span>'
+          : '<span class="rate-none">暂无书评</span>') +
+        '<a href="javascript:void(0)" data-book="' + b.id + '">详情 · 写书评 ›</a></p></div>' +
         '<button class="btn ' + (b.stock > 0 ? 'btn-primary' : 'btn-outline') + '" data-borrow="' + b.id + '">' + (b.stock > 0 ? '预约借阅' : '排队预约') + '</button>' +
         '</article>';
     }).join('') : '<div class="result-card" style="justify-content:center;color:#8A7E6E">未找到符合条件的馆藏，试试其他关键词或放宽筛选</div>';
@@ -304,7 +313,7 @@
     var due = addDays(30);
     YueDuDB.commit({
       type: 'pickup-fulfill', pickupId: id, bookId: p.bookId,
-      loan: { id: uid('l'), bookId: p.bookId, title: p.title, due: due, renewable: true, createdAt: Date.now() }
+      loan: { id: uid('l'), bookId: p.bookId, title: p.title, due: due, renewable: true, code: loanCode(), createdAt: Date.now() }
     }).then(function () {
       toast('《' + p.title + '》借出办理完成 · 应还 ' + due);
       InkFX.burst(innerWidth / 2, innerHeight / 2, 26);
@@ -316,6 +325,76 @@
     if (!p) return;
     YueDuDB.commit({ type: 'pickup-cancel', pickupId: id })
       .then(function () { toast('《' + p.title + '》的预约已取消'); renderAll(); });
+  }
+
+  /* ================= 图书评论与评分 ================= */
+  function reviewsOf(db, bookId) {
+    return (db.reviews || []).filter(function (r) { return r.bookId === bookId; })
+      .sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
+  }
+  function ratingInfo(db, bookId) {
+    var rs = reviewsOf(db, bookId);
+    if (!rs.length) return { avg: 0, count: 0 };
+    var sum = rs.reduce(function (s, r) { return s + (r.rating || 0); }, 0);
+    return { avg: Math.round(sum / rs.length * 10) / 10, count: rs.length };
+  }
+  function starsHTML(avg) {
+    var full = Math.round(avg), out = '';
+    for (var i = 1; i <= 5; i++) out += '<i class="st' + (i <= full ? ' on' : '') + '">★</i>';
+    return '<span class="stars">' + out + '</span>';
+  }
+  function fmtDay(ts) { var d = new Date(ts || Date.now()); return (d.getMonth() + 1) + '.' + d.getDate(); }
+
+  /* 书籍详情弹层：馆藏信息 + 评分总览 + 书评列表 + 写书评表单 */
+  function showBook(id) {
+    var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === id; });
+    if (!b) return;
+    var ri = ratingInfo(db, id), rs = reviewsOf(db, id);
+    S.revDraft = { bookId: id, rating: 0 };
+    var form =
+      '<div class="rev-form">' +
+      '<div class="rev-line"><span class="rev-label">我的评分</span>' +
+      '<span class="rev-stars" id="revStars">' +
+      [1, 2, 3, 4, 5].map(function (i) { return '<button type="button" data-star="' + i + '" title="' + i + ' 星">★</button>'; }).join('') +
+      '</span><span class="rev-hint" id="revRatingHint">未评分</span></div>' +
+      '<div class="rev-line"><span class="rev-label">昵称</span>' +
+      '<input id="revName" maxlength="20" placeholder="匿名读者" value="' + esc(readerName()) + '"></div>' +
+      '<textarea id="revText" maxlength="300" rows="3" placeholder="写下您的阅读感受（可只评分不留文字，300 字内）"></textarea>' +
+      '<div class="rev-actions"><button class="btn btn-primary" data-revpost="' + esc(id) + '">发布书评</button>' +
+      '<span class="rev-note">再次以同一昵称发布即视为修改</span></div></div>';
+    var list = rs.length ? rs.map(function (r) {
+      return '<div class="rev-item"><div class="rev-head"><b>' + esc(r.user || '匿名读者') + '</b>' +
+        starsHTML(r.rating) + '<time>' + fmtDay(r.time) + '</time></div>' +
+        (r.content ? '<p>' + esc(r.content) + '</p>' : '') + '</div>';
+    }).join('') : '<p class="rev-empty">还没有书评，抢个沙发吧</p>';
+    var body =
+      '<p class="bk-meta">' + esc(b.author) + ' · ' + esc(b.publisher) + ' ' + b.year + ' · ' + esc(b.callNo) + '</p>' +
+      '<p class="bk-meta">' + esc(b.location) + ' · ' + esc(b.shelf) + ' · <span class="' + (b.stock > 0 ? 'ok' : 'no') + '">' + (b.stock > 0 ? '可借' : '已借出') + '</span></p>' +
+      '<div class="bk-rating">' + (ri.count
+        ? '<b class="bk-avgr">' + ri.avg.toFixed(1) + '</b>' + starsHTML(ri.avg) + '<span>' + ri.count + ' 位读者评分</span>'
+        : '<span class="rate-none">暂无读者评分</span>') + '</div>' +
+      '<div class="rev-list">' + list + '</div>' +
+      '<h4 class="rev-form-title">写书评</h4>' + form;
+    modal('《' + b.title + '》· 详情与书评', body,
+      [{ label: b.stock > 0 ? '预约借阅' : '排队预约', primary: true, onClick: function () { reservePickup(id); } }, { label: '关闭' }]);
+  }
+  function readerName() {
+    try { return localStorage.getItem('yuedu-reader-name') || ''; } catch (e) { return ''; }
+  }
+  function postReview(bookId) {
+    var rating = S.revDraft && S.revDraft.bookId === bookId ? S.revDraft.rating : 0;
+    if (!rating) { toast('请先点选评分星级'); return; }
+    var nameEl = document.getElementById('revName'), textEl = document.getElementById('revText');
+    var name = ((nameEl && nameEl.value) || '').trim() || '匿名读者';
+    var text = ((textEl && textEl.value) || '').trim();
+    try { localStorage.setItem('yuedu-reader-name', name); } catch (e) { /* 隐私模式忽略 */ }
+    YueDuDB.commit({
+      type: 'review',
+      item: { id: uid('rv'), bookId: bookId, user: name, rating: rating, content: text, time: Date.now() }
+    }).then(function () {
+      toast('书评已发布 · ' + rating + ' 星 · 感谢分享');
+      showBook(bookId);   // 刷新弹层，展示新列表与均分
+    });
   }
 
   /* ================= 我的借阅独立版块（预约办理 · 在借管理 · 扫码借还） ================= */
@@ -339,12 +418,14 @@
     $('#pickupList').innerHTML = pickHtml || '<li class="empty-note">暂无到馆预约，去藏书检索预约一本吧</li>';
     var loanHtml = loans.slice().reverse().map(function (l, i) {
       var left = daysLeft(l.due);
-      return '<li><span class="loan-spine' + (i % 2 ? ' red' : '') + '"></span>' +
+      var ret = S.scan.pendingReturn === l.id;
+      return '<li' + (ret ? ' class="ret-target"' : '') + '><span class="loan-spine' + (i % 2 ? ' red' : '') + '"></span>' +
         '<div class="loan-body"><strong>《' + esc(l.title) + '》</strong>' +
-        '<small>应还 ' + esc(l.due) + ' · 剩余 <b>' + left + '</b> 天' + (left <= 3 ? ' · 即将到期' : '') + '</small></div>' +
+        '<small>应还 ' + esc(l.due) + ' · 剩余 <b>' + left + '</b> 天' + (left <= 3 ? ' · 即将到期' : '') +
+        ' · 还书码 <b>' + esc(l.code || '—') + '</b></small></div>' +
         '<div class="loan-actions">' +
         (l.renewable ? '<button data-renew="' + esc(l.id) + '">续借</button>' : '') +
-        '<button data-return="' + esc(l.id) + '">归还</button>' +
+        '<button data-return="' + esc(l.id) + '">' + (ret ? '办理中…' : '归还') + '</button>' +
         '<button data-loancancel="' + esc(l.id) + '">取消借阅</button></div></li>';
     }).join('');
     $('#loanFullList').innerHTML = loanHtml || '<li class="empty-note">暂无在借图书，去藏书检索预约一本吧</li>';
@@ -353,8 +434,11 @@
 
   function resetScan() {
     var sc = S.scan;
-    sc.matched = null; sc.error = null; sc.raw = ''; sc.status = ''; sc.busy = false;
+    sc.matched = null; sc.error = null; sc.raw = ''; sc.status = ''; sc.busy = false; sc.source = '';
   }
+
+  /* 在借记录的还书码：办理归还时的凭证之一（扫标签 / 输书名 / 输码 三选一） */
+  function loanCode() { return 'RT-' + Date.now().toString(36).toUpperCase().slice(-6); }
 
   function renderScan() {
     var box = document.getElementById('scanResult');
@@ -364,20 +448,28 @@
     $('#scanBtns').innerHTML = (sc.stream
       ? '<button class="btn btn-primary" data-scan="camShot">拍摄并识别</button><button class="btn btn-ghost" data-scan="camStop">关闭摄像头</button>'
       : '<button class="btn btn-primary" data-scan="camStart">开启摄像头</button>')
-      + '<button class="btn btn-ghost file-btn">上传标签照片<input type="file" id="scanFile" accept="image/*"></button>';
+      + '<button class="btn btn-ghost file-btn">上传图书照片（标签/封面/书脊）<input type="file" id="scanFile" accept="image/*"></button>';
     var hint = document.getElementById('camHintText');
     if (hint) hint.innerHTML = sc.stream
-      ? '摄像头已开启 · 对准图书标签拍摄'
-      : '先开启摄像头，将图书标签对准取景框<br>没有摄像头也可以直接上传标签照片';
+      ? '摄像头已开启 · 对准图书标签、封面或书脊拍摄'
+      : '先开启摄像头，将图书标签/封面/书脊对准取景框<br>没有摄像头也可以直接上传照片或输入还书码';
     $('#scanCam').classList.toggle('live', !!sc.stream);
     var st = document.getElementById('scanStateNote');
-    if (st) st.textContent = sc.busy ? '正在识别…' : (sc.mode === 'borrow' ? '模式：借出登记' : '模式：归还登记');
+    var pending = sc.pendingReturn ? (YueDuDB.get().loans || []).find(function (l) { return l.id === sc.pendingReturn; }) : null;
+    if (st) st.textContent = sc.busy ? '正在识别…'
+      : (pending ? '归还办理中 ·《' + pending.title + '》· 待识别' : (sc.mode === 'borrow' ? '模式：借出登记' : '模式：归还登记'));
 
     var html = '';
+    if (pending) {
+      html += '<div class="scan-pending">归还办理中 ·《<b>' + esc(pending.title) + '》</b> 应还 ' + esc(pending.due) +
+        ' · 还书码 <b>' + esc(pending.code || '—') + '</b>' +
+        ' — 请拍摄该册图书（标签/封面/书脊均可识别），或在下方输入还书码定位' +
+        ' <button class="btn btn-ghost" data-scan="clearPending">放弃办理</button></div>';
+    }
     if (sc.busy) {
-      html = '<div class="scan-spin"><i></i>正在识别标签…</div>';
+      html += '<div class="scan-spin"><i></i>正在识别…（支持图书标签、封面、书脊）</div>';
     } else if (sc.error) {
-      html = '<div class="scan-err">' + esc(sc.error) + '</div>';
+      html += '<div class="scan-err">' + esc(sc.error) + '</div>';
     } else if (sc.matched) {
       var b = sc.matched, db = YueDuDB.get();
       var pick = activePickups(db).filter(function (p) { return p.bookId === b.id; })[0];
@@ -395,13 +487,14 @@
         '<div class="match-info"><b>《' + esc(b.title) + '》</b>' +
         '<div class="match-meta">' + esc(b.author) + ' · ' + esc(b.publisher) + ' ' + b.year + ' · ' + esc(b.callNo) + ' · 在架 ' + b.stock + ' / ' + b.total + ' 册</div>' +
         (sc.status ? '<span class="match-status">标签状态：' + esc(sc.status) + '</span>' : '') +
+        (sc.source ? '<span class="match-status">识别来源：' + ({ label: '图书标签', cover: '图书封面', spine: '书脊' }[sc.source] || sc.source) + '</span>' : '') +
         '<div class="match-note">' + note + '</div>' +
         '<div class="match-act"><button class="btn ' + (sc.mode === 'borrow' && (!pick && (b.stock <= 0 || onLoan)) ? 'btn-ghost' : 'btn-primary') + '" data-scan="confirm">' +
         (sc.mode === 'borrow' ? '确认借出 · ' + esc(b.title) : '确认归还 · ' + esc(b.title)) + '</button></div>' +
         '<div class="match-raw">' + (sc.raw ? '模型原始返回：' + esc(sc.raw) : '来源：手动定位') + '</div>' +
         '</div></div>';
     } else {
-      html = '<div class="scan-idle">拍摄或上传图书标签后<br>识别结果会显示在这里</div>';
+      html += '<div class="scan-idle">拍摄图书标签、封面或书脊均可识别书名<br>识别结果会显示在这里</div>';
     }
     box.innerHTML = html;
   }
@@ -456,7 +549,8 @@
     img.src = URL.createObjectURL(f);
   }
 
-  var LABEL_PROMPT = '这是图书馆图书标签的照片。标签上通常印有书名（可能带书名号《》），并可能标注状态文字（如"借阅""借出""归还""还书""在库"）。请识别图片内容，只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","status":"标签上的状态文字，没有则为空字符串","confidence":"high或medium或low"}';
+  /* 识别提示词：兼容三种拍摄对象 —— ①粘贴的图书标签 ②图书封面 ③书脊 */
+  var BOOK_PROMPT = '这是一张图书馆相关的照片，可能是以下三种之一：①贴在书上的标签（印有书名，可能带书名号《》，并可能标注状态文字如"借阅""借出""归还""在库"）；②图书封面（书名印在封面上）；③书脊（书名竖排或横排印在书脊上）。请识别照片中出现的图书书名。照片中若出现多本书，只取最清晰、最居中的那一本。只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","source":"label或cover或spine，标明书名来自标签、封面还是书脊","status":"标签上的状态文字，没有则为空字符串","confidence":"high或medium或low"}';
 
   async function recognizeScan(dataUrl) {
     var sc = S.scan;
@@ -467,7 +561,7 @@
       var r = await fetch('/api/vision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, prompt: LABEL_PROMPT })
+        body: JSON.stringify({ image: dataUrl, prompt: BOOK_PROMPT })
       });
       var data = await r.json().catch(function () { return {}; });
       if (!data.ok) throw new Error(data.error || ('识别服务不可用（HTTP ' + r.status + '）'));
@@ -481,7 +575,7 @@
 
   function applyScanResult(content) {
     var sc = S.scan;
-    sc.busy = false; sc.raw = content;
+    sc.busy = false; sc.raw = content; sc.source = '';
     var obj = null;
     try {
       var t = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -493,6 +587,7 @@
       sc.matched = null; renderScan(); return;
     }
     sc.status = String(obj.status || '');
+    if (obj.source) sc.source = String(obj.source);
     sc.matched = matchBook(obj.title);
     if (!sc.matched) {
       sc.error = '识别出书名「' + obj.title + '」，但馆藏中找不到这本书，请核对后重试';
@@ -515,14 +610,21 @@
   function manualLocate() {
     var input = document.getElementById('scanManual');
     var q = (input && input.value || '').trim();
-    if (!q) { toast('请输入书名或索书号'); return; }
+    if (!q) { toast('请输入书名、索书号或还书码'); return; }
     var b = matchBook(q);
+    var sc = S.scan;
     if (!b) {
-      S.scan.error = '馆藏中找不到「' + q + '」，请核对后重试';
-      S.scan.matched = null; S.scan.raw = ''; S.scan.status = '';
+      /* 还书码定位：输入在借记录的 RT-XXXXXX 直接锁定该书 */
+      var norm = function (s) { return String(s).trim().toUpperCase(); };
+      var loan = (YueDuDB.get().loans || []).find(function (l) { return l.code && norm(l.code) === norm(q); });
+      if (loan) b = (YueDuDB.get().books || []).find(function (x) { return x.id === loan.bookId; }) || null;
+    }
+    if (!b) {
+      sc.error = '馆藏中找不到「' + q + '」，可输入书名、索书号或在借记录上的还书码';
+      sc.matched = null; sc.raw = ''; sc.status = '';
       renderScan(); return;
     }
-    S.scan.error = null; S.scan.status = ''; S.scan.raw = ''; S.scan.matched = b;
+    sc.error = null; sc.status = ''; sc.raw = ''; sc.matched = b;
     renderScan();
   }
 
@@ -537,9 +639,9 @@
         if (b.stock <= 0) { toast('该书在架 0 册，暂不能办理借出'); return; }
         var due = addDays(30);
         YueDuDB.commit({ type: 'pickup-fulfill', pickupId: pick.id, bookId: b.id,
-          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due, renewable: true, createdAt: Date.now() }
+          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due, renewable: true, code: loanCode(), createdAt: Date.now() }
         }).then(function () {
-          resetScan(); renderScan(); renderAll();
+          resetScan(); S.scan.pendingReturn = null; renderScan(); renderAll();
           toast('已核销预约 ·《' + b.title + '》借出 · 应还 ' + due);
         });
       } else {
@@ -548,18 +650,24 @@
         if ((db.loans || []).length >= 6) { toast('在借已达 6 册上限，请先归还'); return; }
         var due2 = addDays(30);
         YueDuDB.commit({ type: 'borrow', bookId: b.id,
-          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due2, renewable: true, createdAt: Date.now() }
+          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due2, renewable: true, code: loanCode(), createdAt: Date.now() }
         }).then(function () {
-          resetScan(); renderScan(); renderAll();
+          resetScan(); S.scan.pendingReturn = null; renderScan(); renderAll();
           toast('借出办理完成 ·《' + b.title + '》应还 ' + due2);
         });
       }
     } else {
-      var row = (db.loans || []).filter(function (l) { return l.bookId === b.id; })[0];
+      /* 归还登记：若从「我的借阅」发起，须与待归还册次一致 */
+      var target = sc.pendingReturn ? (db.loans || []).find(function (l) { return l.id === sc.pendingReturn; }) : null;
+      if (target && target.bookId !== b.id) {
+        sc.error = '识别到《' + b.title + '》，但当前待归还的是《' + target.title + '》，请核对后再试';
+        sc.matched = null; renderScan(); return;
+      }
+      var row = target || (db.loans || []).filter(function (l) { return l.bookId === b.id; })[0];
       if (!row) { toast('这本书当前没有在借记录'); return; }
       YueDuDB.commit({ type: 'return', loanId: row.id })
         .then(function () {
-          resetScan(); renderScan(); renderAll();
+          resetScan(); sc.pendingReturn = null; renderScan(); renderAll();
           toast('归还登记完成 ·《' + b.title + '》感谢爱护图书');
         });
     }
@@ -592,9 +700,22 @@
     YueDuDB.commit({ type: 'renew', loanId: id, due: fmtDue(cur) })
       .then(function () { toast('续借成功 · 借期延长 14 天'); renderAll(); });
   }
+  /* 归还办理：不能一键完成 —— 引导到扫码台，扫描该书标签/封面，
+     或输入还书码 / 书名，识别匹配后才可确认归还 */
   function returnBook(id) {
-    YueDuDB.commit({ type: 'return', loanId: id })
-      .then(function () { toast('归还成功，库存已更新'); renderAll(); });
+    var l = (YueDuDB.get().loans || []).find(function (x) { return x.id === id; });
+    if (!l) return;
+    if (S.page !== 'loans') location.hash = '#/loans';
+    var sc = S.scan;
+    sc.mode = 'return';
+    sc.pendingReturn = id;
+    resetScan();
+    renderAll();
+    var el = document.querySelector('.scan-station');
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var input = document.getElementById('scanManual');
+    if (input) { input.value = ''; input.placeholder = '输入《' + l.title + '》的还书码 ' + (l.code || '') + ' 或书名'; }
+    toast('请扫描《' + l.title + '》的标签或封面，或输入还书码 ' + (l.code || '—') + ' 完成归还');
   }
   function confirmResv(ev) {
     if (!S.picked.length) return;
@@ -738,6 +859,20 @@
         renderSeats(); InkFX.burst(e.clientX, e.clientY, 9); return;
       }
 
+      var bkLink = t.closest('[data-book]');
+      if (bkLink) { showBook(bkLink.dataset.book); return; }
+      var star = t.closest('[data-star]');
+      if (star) {
+        var sv2 = +star.dataset.star;
+        if (S.revDraft) S.revDraft.rating = sv2;
+        var wrap = document.getElementById('revStars');
+        if (wrap) $$('button', wrap).forEach(function (b2) { b2.classList.toggle('on', +b2.dataset.star <= sv2); });
+        var rh = document.getElementById('revRatingHint');
+        if (rh) rh.textContent = sv2 + ' 星';
+        return;
+      }
+      if (t.closest('[data-revpost]')) { postReview(t.closest('[data-revpost]').dataset.revpost); return; }
+
       if (t.closest('[data-borrow]')) { reservePickup(t.closest('[data-borrow]').dataset.borrow, e); return; }
       if (t.closest('[data-wishlist]')) { addWish(t.closest('[data-wishlist]').dataset.wishlist); return; }
       if (t.closest('[data-renew]')) { renew(t.closest('[data-renew]').dataset.renew); return; }
@@ -749,7 +884,8 @@
       var scb = t.closest('[data-scan]');
       if (scb) {
         var sv = scb.dataset.scan;
-        if (sv === 'mode') { S.scan.mode = scb.dataset.v; S.scan.matched = null; S.scan.error = null; S.scan.status = ''; renderScan(); return; }
+        if (sv === 'mode') { S.scan.mode = scb.dataset.v; S.scan.matched = null; S.scan.error = null; S.scan.status = ''; S.scan.source = ''; if (S.scan.mode === 'borrow') S.scan.pendingReturn = null; renderScan(); return; }
+        if (sv === 'clearPending') { S.scan.pendingReturn = null; S.scan.matched = null; S.scan.error = null; renderScan(); toast('已放弃本次归还办理'); return; }
         if (sv === 'camStart') { startScanCam(); return; }
         if (sv === 'camStop') { stopScanCam(); S.scan.matched = null; renderScan(); return; }
         if (sv === 'camShot') { shotScanCam(); return; }

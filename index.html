@@ -311,18 +311,18 @@
             <video id="scanVideo" autoplay playsinline muted></video>
             <div class="cam-hint">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3.5"/></svg>
-              <span id="camHintText">先开启摄像头，将图书标签对准取景框<br>没有摄像头也可以直接上传标签照片</span>
+              <span id="camHintText">先开启摄像头，将图书标签/封面/书脊对准取景框<br>没有摄像头也可以直接上传照片或输入还书码</span>
             </div>
           </div>
           <div class="scan-btns" id="scanBtns">
             <button class="btn btn-primary" data-scan="camStart">开启摄像头</button>
-            <button class="btn btn-ghost file-btn">上传标签照片<input type="file" id="scanFile" accept="image/*"></button>
+            <button class="btn btn-ghost file-btn">上传图书照片（标签/封面/书脊）<input type="file" id="scanFile" accept="image/*"></button>
           </div>
           <div class="manual-locate">
-            <input id="scanManual" type="text" placeholder="识别不便？手动输入书名定位图书" autocomplete="off">
+            <input id="scanManual" type="text" placeholder="识别不便？手动输入书名 / 索书号 / 还书码定位" autocomplete="off">
             <button class="btn btn-outline" data-scan="manual">定 位</button>
           </div>
-          <p class="scan-note">借出：扫描图书标签，系统自动核销最早的<b>到馆预约</b>并登记借出（借期 30 天）；无预约且在架时可直接办理。<br>归还：扫描标签识别图书，系统读取在借状态并完成<b>归还登记</b>。识别由视觉模型完成，识别不便时可用下方手动定位。</p>
+          <p class="scan-note">识别范围：图书<b>标签、封面、书脊</b>均可拍照识别书名；每册在借图书另有<b>还书码</b>（RT-XXXXXX），手动输入即可精准定位。<br>借出：识别后系统自动核销最早的<b>到馆预约</b>并登记借出（借期 30 天）；无预约且在架时可直接办理。<br>归还：读者点「归还」后须到扫码台<b>识别该册图书或输入还书码</b>，匹配一致方可确认归还，不支持一键归还。</p>
         </section>
 
         <section class="panel">
@@ -349,7 +349,7 @@
             <span class="panel-note" id="loanNote"></span>
           </div>
           <ul class="loan-list" id="loanFullList"></ul>
-          <p class="list-foot" id="loanFoot">每册可续借一次（+14 天）；如借错可「取消借阅」，库存即时回架。</p>
+          <p class="list-foot" id="loanFoot">每册可续借一次（+14 天）；归还请点「归还」到上方扫码台识别图书或输入还书码办理；如借错可「取消借阅」，库存即时回架。</p>
         </section>
       </div>
     </main>

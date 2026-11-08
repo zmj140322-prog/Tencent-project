@@ -13,7 +13,8 @@ const MODEL = process.env.HUNYUAN_MODEL || 'hunyuan-vision';
 const UPSTREAM = process.env.HUNYUAN_URL || 'https://tcamp.qq.com/openai/chat/completions';
 const ROOT = __dirname;
 
-const LABEL_PROMPT = '这是图书馆图书标签的照片。标签上通常印有书名（可能带书名号《》），并可能标注状态文字（如"借阅""借出""归还""还书""在库"）。请识别图片内容，只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","status":"标签上的状态文字，没有则为空字符串","confidence":"high或medium或low"}';
+/* 兜底识别提示词：客户端未传 prompt 时使用；覆盖 标签 / 封面 / 书脊 三种拍摄对象 */
+const BOOK_PROMPT = '这是一张图书馆相关的照片，可能是：①图书标签（印有书名与状态文字如"借阅""归还"）；②图书封面；③书脊。请识别照片中最清晰、最居中的一本书的书名。只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","source":"label或cover或spine","status":"标签状态文字，没有则为空字符串","confidence":"high或medium或low"}';
 
 const MIME = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8',
   '.css':'text/css; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg',
@@ -29,7 +30,8 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const { image, prompt } = JSON.parse(body || '{}');
-        if (!image) throw new Error('缺少图片数据');
+        if (!image) { const e = new Error('缺少图片数据'); e.status = 400; throw e; }
+        if (!KEY) { const e = new Error('服务端未配置识别密钥（HUNYUAN_KEY）'); e.status = 500; throw e; }
         const dataUrl = image.startsWith('data:') ? image : 'data:image/jpeg;base64,' + image;
         const r = await fetch(UPSTREAM, {
           method: 'POST',
@@ -37,7 +39,7 @@ const server = http.createServer(async (req, res) => {
           body: JSON.stringify({
             model: MODEL,
             messages: [{ role: 'user', content: [
-              { type: 'text', text: prompt || LABEL_PROMPT },
+              { type: 'text', text: prompt || BOOK_PROMPT },
               { type: 'image_url', image_url: { url: dataUrl } }
             ]}]
           })
@@ -52,7 +54,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: true, content }));
       } catch (err) {
-        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.writeHead(err && err.status || 502, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: err.message || '识别服务暂不可用' }));
       }
     });

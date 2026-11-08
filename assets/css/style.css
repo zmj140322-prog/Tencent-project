@@ -433,6 +433,56 @@ html.anim .reveal.in{opacity:1;transform:none}
   .toast{left:14px;right:14px;bottom:18px;transform:translateY(20px);text-align:center}
   .toast.show{transform:none}
 }
+/* ============ 评分与书评 ============ */
+.stars{display:inline-flex;gap:1px;vertical-align:-1px}
+.stars .st{font-style:normal;font-size:13px;color:#DDD2BC;line-height:1}
+.stars .st.on{color:#9E3B32}
+.rc-rate{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px}
+.rc-rate b{color:#4A4238;font-size:14px}
+.rc-rate span{color:#8A7E6E}
+.rc-rate a{margin-left:auto;color:#9E3B32;text-decoration:none;font-size:13px}
+.rc-rate a:hover{text-decoration:underline}
+.rc-body h3 a{color:inherit;text-decoration:none}
+.rc-body h3 a:hover{color:#9E3B32}
+.rank-body strong a{color:inherit;text-decoration:none}
+.rank-body strong a:hover{color:#9E3B32}
+.rate-none{color:#B0A48F;font-size:12px}
+.bk-meta{margin:4px 0;font-size:14px;color:#5C5344}
+.bk-rating{display:flex;align-items:center;gap:8px;margin:12px 0;padding:10px 14px;background:#F7F1E5;border-radius:8px}
+.bk-avgr{font-size:26px;color:#9E3B32;line-height:1}
+.bk-rating .stars .st{font-size:16px}
+.bk-rating span{color:#8A7E6E;font-size:13px}
+.rev-list{max-height:240px;overflow:auto;border-top:1px dashed #DED3BE;padding-top:4px;margin-top:4px}
+.rev-item{padding:10px 0;border-bottom:1px dashed #EAE1CE}
+.rev-item:last-child{border-bottom:0}
+.rev-head{display:flex;align-items:center;gap:8px}
+.rev-head b{color:#4A4238}
+.rev-head time{margin-left:auto;color:#B0A48F;font-size:12px}
+.rev-item p{margin:6px 0 0;font-size:13.5px;color:#5C5344;line-height:1.7}
+.rev-empty{color:#B0A48F;font-size:13px;padding:10px 0}
+.rev-form-title{margin:14px 0 8px;font-size:14px;color:#4A4238}
+.rev-form{display:flex;flex-direction:column;gap:8px}
+.rev-line{display:flex;align-items:center;gap:10px}
+.rev-label{font-size:13px;color:#8A7E6E;flex:0 0 56px}
+.rev-hint{font-size:12px;color:#B0A48F}
+.rev-stars{display:inline-flex;gap:2px}
+.rev-stars button{width:30px;height:30px;padding:0;border:0;background:transparent;font-size:22px;line-height:1;color:#DDD2BC;cursor:pointer;transition:transform .15s,color .15s}
+.rev-stars button.on{color:#9E3B32}
+.rev-stars button:hover{transform:scale(1.2)}
+.rev-form input{flex:1;padding:8px 10px;border:1px solid #DED3BE;border-radius:6px;background:#fff;font:inherit;font-size:13.5px}
+.rev-form textarea{width:100%;padding:8px 10px;border:1px solid #DED3BE;border-radius:6px;background:#fff;font:inherit;font-size:13.5px;resize:vertical}
+.rev-actions{display:flex;align-items:center;gap:12px}
+.rev-note{font-size:12px;color:#B0A48F}
+
+/* ============ 扫码台：归还办理横幅 / 待归还高亮 ============ */
+.scan-pending{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-bottom:10px;padding:10px 14px;border:1px solid #9E3B32;background:#FBF3EC;border-radius:8px;font-size:13.5px;color:#6B4A3A}
+.scan-pending b{color:#9E3B32}
+.scan-pending .btn{margin-left:auto;padding:5px 12px;font-size:12.5px}
+.match-status{display:inline-block;margin:4px 8px 0 0;padding:2px 8px;background:#F1EADA;border-radius:10px;font-size:12px;color:#7A6F5C}
+li.ret-target{outline:2px solid #9E3B32;outline-offset:-2px;border-radius:8px;background:#FBF3EC}
+#loanList li.ret-target .loan-actions button[data-return],
+#loanFullList li.ret-target .loan-actions button[data-return]{border-color:#9E3B32;color:#9E3B32;font-weight:600}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   #ink-canvas{display:none}
