@@ -91,7 +91,8 @@
         '<span class="uc-name">' + esc(S.user.label) + '</span>' +
         '<span class="role-badge' + (isAdmin() ? ' is-admin' : '') + '">' +
         (isAdmin() ? '管理员' : '读者') + '</span>' +
-        (isAdmin() ? '' : '<button class="uc-btn" data-auth="admin">管理员认证</button>') +
+        (S.user.demo ? '<span class="role-badge is-demo">演示</span>' : '') +
+        (isAdmin() || S.user.demo ? '' : '<button class="uc-btn" data-auth="admin">管理员认证</button>') +
         '<button class="uc-btn" data-auth="logout">退出</button>';
     } else {
       el.classList.remove('logged');
@@ -108,11 +109,14 @@
   }
 
   function openAuth(mode) {
+    mode = mode === 'email' ? 'email' : 'phone';
+    var errHtml = '<p class="auth-notice" id="authErr" style="display:none"></p>';
     if (!cloud) {
-      modal('登录 · 悦读', '<p class="auth-notice">云服务组件未加载，请检查网络后刷新页面重试。</p>');
+      /* 云端组件不可达：仅提供演示模式（纯本地，不依赖云服务） */
+      modal('登录 · 悦读', errHtml + demoZoneHtml() +
+        '<p class="auth-notice">云端登录组件未加载（检查网络后刷新可用完整登录），可先用演示模式测试。</p>');
       return;
     }
-    mode = mode === 'email' ? 'email' : 'phone';
     var tabs = '<div class="auth-tabs">' +
       '<button class="auth-tab' + (mode === 'phone' ? ' on' : '') + '" data-authmode="phone">手机验证码</button>' +
       '<button class="auth-tab' + (mode === 'email' ? ' on' : '') + '" data-authmode="email">邮箱登录</button></div>';
@@ -136,10 +140,37 @@
         '<p class="auth-note">新手机号验证后自动注册；读者登录后可点右上角「管理员认证」输入口令开通管理员</p></div>';
     }
     modal('登录 · 悦读',
-      '<p class="auth-notice" id="authErr" style="display:none"></p>' + body +
-      '<button class="btn btn-outline btn-block" data-authdo="wechat">微信扫码登录</button>');
+      errHtml + body +
+      '<button class="btn btn-outline btn-block" data-authdo="wechat">微信扫码登录</button>' +
+      demoZoneHtml());
     var p = document.getElementById(mode === 'email' ? 'authEmail' : 'authPhone');
     if (p) p.focus();
+  }
+
+  /* 演示模式（本地测试）：免验证码即点即用，身份仅存本浏览器 localStorage，
+   * 不接入云端账号体系；借阅 / 书评等业务事件昵称自动带「演示·」前缀，便于事后辨识 */
+  function demoZoneHtml() {
+    return '<div class="demo-zone">' +
+      '<div class="demo-title">演示模式 · 本地测试（不连云端账号）</div>' +
+      '<span class="code-row"><input id="demoName" maxlength="12" placeholder="昵称（选填）"></span>' +
+      '<div class="demo-btns">' +
+      '<button type="button" class="btn btn-outline" data-authdo="demoreader">读者身份演示</button>' +
+      '<button type="button" class="btn btn-outline" data-authdo="demoadmin">管理员身份演示</button></div>' +
+      '<p class="auth-note">测试结束后点右上角「退出」即恢复未登录；正式使用请走上方云端登录</p></div>';
+  }
+  function demoSave(u) { try { localStorage.setItem('yuedu-demo-user', JSON.stringify(u)); } catch (e) { /* 忽略 */ } }
+  function demoLoad() { try { return JSON.parse(localStorage.getItem('yuedu-demo-user') || 'null'); } catch (e) { return null; } }
+  function demoClear() { try { localStorage.removeItem('yuedu-demo-user'); } catch (e) { /* 忽略 */ } }
+
+  function demoLogin(role) {
+    var nameEl = document.getElementById('demoName');
+    var nick = ((nameEl && nameEl.value) || '').trim() || (role === 'admin' ? '馆长' : '读者');
+    S.user = { id: uid('demo'), label: '演示·' + nick, role: role, demo: true };
+    demoSave(S.user);
+    clearInterval(codeTimer);
+    closeModal();
+    renderUserChip(); renderAll();
+    toast('已进入演示模式：' + S.user.label + (role === 'admin' ? '（管理员）' : '（读者）'));
   }
 
   function startCountdown(sec) {
@@ -301,6 +332,7 @@
   async function afterSignIn(u) {
     if (!u) throw new Error('登录会话建立失败');
     S.user = { id: String(u.id || ''), label: userLabel(u), role: 'reader' };
+    demoClear();
     await refreshRole();
     clearInterval(codeTimer);
     closeModal();
@@ -317,7 +349,8 @@
   }
 
   async function doLogout() {
-    if (cloud) { try { await cloud.auth.signOut(); } catch (e) { /* 忽略 */ } }
+    if (cloud && !S.user.demo) { try { await cloud.auth.signOut(); } catch (e) { /* 忽略 */ } }
+    demoClear();
     S.user = null; renderUserChip(); renderAll();
     toast('已退出登录');
   }
@@ -342,24 +375,38 @@
     return false;
   }
 
-  /* 启动时恢复会话：云端 getSession + 管理员身份判定 */
+  /* 启动时恢复会话：优先云端 getSession；无云端会话时回退本机演示身份 */
   async function restoreSession() {
-    if (!cloud) { renderUserChip(); return; }
+    if (!cloud) {
+      var d0 = demoLoad();
+      if (d0) S.user = d0;
+      renderUserChip();
+      return;
+    }
     try {
       if (await handleOAuthCallback()) return;
       var r = await cloud.auth.getSession();
       var s = r && r.data;
       if (s && s.user) {
         S.user = { id: String(s.user.id || ''), label: userLabel(s.user), role: 'reader' };
+        demoClear();
         await refreshRole();
+      } else {
+        var d1 = demoLoad();
+        if (d1) S.user = d1;
       }
-    } catch (e) { /* 云服务不可达：保持未登录，站点浏览不受影响 */ }
+    } catch (e) {
+      var d2 = demoLoad();
+      if (d2) S.user = d2;
+      /* 云服务不可达：保持演示身份或未登录，站点浏览不受影响 */
+    }
     renderUserChip();
   }
 
   /* 管理员认证：口令校验在云端安全函数 yuedu_claim_admin 内完成 */
   function openClaimModal() {
     if (!S.user) return;
+    if (S.user.demo) { toast('演示身份无需认证——退出后重新用「管理员身份演示」进入即可'); return; }
     modal('管理员认证',
       '<div class="auth-form">' +
       '<label>管理员口令<input id="claimCode" type="password" maxlength="40" placeholder="请向馆方获取管理员口令"></label>' +
@@ -1261,6 +1308,8 @@
         else if (ak === 'sendemailcode') sendEmailCode();
         else if (ak === 'emailotp') submitEmailLogin();
         else if (ak === 'pw') submitPasswordLogin();
+        else if (ak === 'demoreader') demoLogin('reader');
+        else if (ak === 'demoadmin') demoLogin('admin');
         else if (ak === 'wechat') wechatLogin();
         else if (ak === 'claim') claimAdmin();
         return;
