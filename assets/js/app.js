@@ -79,7 +79,7 @@
         '<div class="rank-body"><strong>《' + esc(b.title) + '》</strong>' +
         '<small>' + esc(b.author) + ' · ' + esc(b.publisher) + ' · ' + esc(b.callNo) + '</small></div>' +
         '<div class="rank-side">在架 ' + b.stock + ' 册' +
-        '<button data-borrow="' + b.id + '">' + (b.stock > 0 ? '借阅' : '预约') + '</button></div></li>';
+        '<button data-borrow="' + b.id + '">' + (b.stock > 0 ? '预约借阅' : '排队预约') + '</button></div></li>';
     }).join('');
   }
   function renderNotices() {
@@ -90,8 +90,16 @@
   }
   function renderLoans() {
     var db = YueDuDB.get(), loans = (db.loans || []).slice().reverse();
-    $('.panel-note', $('#loansPanel')).textContent = '在借 ' + loans.length + ' 册 · 最多 6 册';
-    $('#loanList').innerHTML = loans.length ? loans.map(function (l, i) {
+    var picks = activePickups(db).slice().reverse();
+    $('.panel-note', $('#loansPanel')).textContent = '在借 ' + loans.length + ' 册 · 待办理 ' + picks.length + ' 册 · 最多 6 册';
+    var pickHtml = picks.map(function (p) {
+      return '<li><span class="loan-spine red"></span>' +
+        '<div class="loan-body"><strong>《' + esc(p.title) + '》</strong>' +
+        '<small>预约借阅 · 待到馆办理 <b>' + esc(p.code) + '</b></small></div>' +
+        '<div class="loan-actions"><button data-pickup="' + esc(p.id) + '">办理</button>' +
+        '<button data-pickcancel="' + esc(p.id) + '">取消</button></div></li>';
+    }).join('');
+    var loanHtml = loans.map(function (l, i) {
       var left = daysLeft(l.due);
       return '<li><span class="loan-spine' + (i % 2 ? ' red' : '') + '"></span>' +
         '<div class="loan-body"><strong>《' + esc(l.title) + '》</strong>' +
@@ -99,7 +107,8 @@
         '<div class="loan-actions">' +
         (l.renewable ? '<button data-renew="' + esc(l.id) + '">续借</button>' : '') +
         '<button data-return="' + esc(l.id) + '">归还</button></div></li>';
-    }).join('') : '<li class="empty-note">暂无在借图书，去藏书检索借一本吧</li>';
+    }).join('');
+    $('#loanList').innerHTML = (pickHtml + loanHtml) || '<li class="empty-note">暂无在借与预约，去藏书检索约一本吧</li>';
   }
   function renderFeature() {
     var b = (YueDuDB.get().books || []).find(function (x) { return x.id === 'b1'; });
@@ -169,7 +178,7 @@
         '<p class="rc-meta">' + esc(b.author) + ' · ' + esc(b.publisher) + ' ' + b.year + ' · ' + esc(b.callNo) + '</p>' +
         '<p class="rc-meta">' + esc(b.location) + ' · ' + esc(b.shelf) +
         ' <em>·</em> <span class="' + (b.stock > 0 ? 'ok' : 'no') + '">' + (b.stock > 0 ? '可借' : '已借出') + '</span></p></div>' +
-        '<button class="btn ' + (b.stock > 0 ? 'btn-primary' : 'btn-outline') + '" data-borrow="' + b.id + '">' + (b.stock > 0 ? '借阅' : '预约') + '</button>' +
+        '<button class="btn ' + (b.stock > 0 ? 'btn-primary' : 'btn-outline') + '" data-borrow="' + b.id + '">' + (b.stock > 0 ? '预约借阅' : '排队预约') + '</button>' +
         '</article>';
     }).join('') : '<div class="result-card" style="justify-content:center;color:#8A7E6E">未找到符合条件的馆藏，试试其他关键词或放宽筛选</div>';
 
@@ -250,29 +259,60 @@
     });
   }
 
-  /* ---------------- 业务操作 ---------------- */
-  function borrow(bookId, ev) {
+  /* ---------------- 业务操作：预约借阅 · 到馆办理 ---------------- */
+  function activePickups(db) {
+    return (db.pickups || []).filter(function (p) { return !p.fulfilled && !p.cancelled; });
+  }
+  function reservePickup(bookId, ev) {
     var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === bookId; });
     if (!b) return;
-    if (b.stock <= 0) {
-      if ((db.wishlist || []).some(function (w) { return w.bookId === bookId && w.type === 'hold'; })) {
-        toast('《' + b.title + '》已在您的预约队列中'); return;
-      }
-      YueDuDB.commit({ type: 'wish', item: { id: uid('h'), bookId: bookId, title: b.title, type: 'hold', createdAt: Date.now() } })
-        .then(function () { toast('《' + b.title + '》已加入预约队列，到馆后优先通知'); });
-      return;
-    }
-    if ((db.loans || []).length >= 6) { toast('在借已达 6 册上限，请先归还'); return; }
     if ((db.loans || []).some(function (l) { return l.bookId === bookId; })) { toast('该书已在您的借阅中'); return; }
-    var due = addDays(30);
+    if (activePickups(db).some(function (p) { return p.bookId === bookId; })) { toast('《' + b.title + '》已在预约队列中'); return; }
+    var holding = (db.loans || []).length + activePickups(db).length;
+    if (holding >= 6) { toast('在借与待办理合计已达 6 册上限，请先归还'); return; }
+    var code = 'PU-' + Date.now().toString(36).toUpperCase().slice(-6);
     YueDuDB.commit({
-      type: 'borrow', bookId: bookId,
-      loan: { id: uid('l'), bookId: bookId, title: b.title, due: due, renewable: true, createdAt: Date.now() }
+      type: 'pickup',
+      item: { id: uid('p'), bookId: bookId, title: b.title, code: code, createdAt: Date.now(), fulfilled: false, cancelled: false }
     }).then(function () {
-      toast('《' + b.title + '》借阅成功 · 应还 ' + due);
+      toast('《' + b.title + '》预约成功 · 凭取书码到馆办理');
       if (ev && InkFX) InkFX.burst(ev.clientX, ev.clientY, 22);
       renderAll();
     });
+  }
+  function showPickup(id) {
+    var p = activePickups(YueDuDB.get()).find(function (x) { return x.id === id; });
+    if (!p) return;
+    modal('到馆办理 · 预约借阅',
+      '<p>请向工作人员出示取书码，办理《<b>' + esc(p.title) + '</b>》的借出手续：</p>' +
+      '<div style="text-align:center;font-size:22px;letter-spacing:2px;margin:10px 0"><b>' + esc(p.code) + '</b></div>' +
+      '<div id="pickupQr" style="width:110px;height:110px;margin:0 auto 6px;border:1px solid #DED3BE;padding:6px;background:#fff"></div>' +
+      '<div class="m-note">取书码保留 3 天，逾期预约自动取消；此二维码为演示码，正式部署时由馆内扫码终端读取。</div>',
+      [{ label: '工作人员核销（演示）', primary: true, onClick: function () { fulfillPickup(id); } }, { label: '稍后办理' }]);
+    InkFX.qr($('#pickupQr'), p.code);
+  }
+  function fulfillPickup(id) {
+    var db = YueDuDB.get();
+    var p = activePickups(db).find(function (x) { return x.id === id; });
+    if (!p) return;
+    if ((db.loans || []).some(function (l) { return l.bookId === p.bookId; })) { toast('该书已在您的借阅中'); return; }
+    var b = (db.books || []).find(function (x) { return x.id === p.bookId; });
+    if (!b || b.stock <= 0) { toast('该书当前无在架馆藏，可继续排队等待回架'); return; }
+    var due = addDays(30);
+    YueDuDB.commit({
+      type: 'pickup-fulfill', pickupId: id, bookId: p.bookId,
+      loan: { id: uid('l'), bookId: p.bookId, title: p.title, due: due, renewable: true, createdAt: Date.now() }
+    }).then(function () {
+      toast('《' + p.title + '》借出办理完成 · 应还 ' + due);
+      InkFX.burst(innerWidth / 2, innerHeight / 2, 26);
+      renderAll();
+    });
+  }
+  function cancelPickup(id) {
+    var p = activePickups(YueDuDB.get()).find(function (x) { return x.id === id; });
+    if (!p) return;
+    YueDuDB.commit({ type: 'pickup-cancel', pickupId: id })
+      .then(function () { toast('《' + p.title + '》的预约已取消'); renderAll(); });
   }
   function addWish(bookId) {
     var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === bookId; });
@@ -341,10 +381,18 @@
 
   function showLoans() {
     var db = YueDuDB.get(), loans = db.loans || [];
-    modal('我的借阅', loans.length ? '<ul class="m-list">' + loans.map(function (l) {
-      return '<li><span>《' + esc(l.title) + '》</span><span>应还 ' + esc(l.due) + ' · 剩余 ' + daysLeft(l.due) + ' 天</span></li>';
-    }).join('') + '</ul><div class="m-note">在借 ' + loans.length + ' / 6 册 · 每册可续借一次（+14 天）。数据已写入共享数据库，其他访客可见库存变化。</div>'
-      : '<p>暂无在借图书。</p>', [{ label: '去检索', primary: true, onClick: function () { location.hash = '#/search'; } }, { label: '关闭' }]);
+    var picks = activePickups(db);
+    var pickPart = picks.length
+      ? '<p class="m-note" style="margin:0 0 6px">到馆预约 · 待办理（凭取书码到馆借出）</p><ul class="m-list">' +
+        picks.map(function (p) {
+          return '<li><span>《' + esc(p.title) + '》</span><span>取书码 ' + esc(p.code) + '</span></li>';
+        }).join('') + '</ul>'
+      : '';
+    modal('我的借阅', pickPart + (loans.length
+      ? '<ul class="m-list">' + loans.map(function (l) {
+          return '<li><span>《' + esc(l.title) + '》</span><span>应还 ' + esc(l.due) + ' · 剩余 ' + daysLeft(l.due) + ' 天</span></li>';
+        }).join('') + '</ul><div class="m-note">在借 ' + loans.length + ' 册 + 待办理 ' + picks.length + ' 册 · 合计最多 6 册 · 每册可续借一次（+14 天）。数据已写入共享数据库，其他访客可见库存变化。</div>'
+      : '<p>暂无在借图书。</p>'), [{ label: '去检索', primary: true, onClick: function () { location.hash = '#/search'; } }, { label: '关闭' }]);
   }
   function showReservations() {
     var list = (YueDuDB.get().reservations || []).slice().reverse();
@@ -360,7 +408,7 @@
   }
   function showHelp(kind) {
     var map = {
-      help: ['检索与借阅指南', '<p><b>检索</b>：可按书名、作者、出版社、索书号或门类关键词检索；左侧筛选可叠加馆藏地与借阅状态。</p><p><b>借阅</b>：每位读者最多在借 6 册，借期 30 天，可续借一次（+14 天）。</p><p><b>数据</b>：借阅、归还、预约与签到均写入云端共享数据库，并同步至本地 IndexedDB。</p>'],
+      help: ['检索与借阅指南', '<p><b>检索</b>：可按书名、作者、出版社、索书号或门类关键词检索；左侧筛选可叠加馆藏地与借阅状态。</p><p><b>借阅</b>：采用「预约借阅 · 到馆办理」——线上预约生成取书码，凭码到馆由工作人员核销借出；在借与待办理合计最多 6 册，借期 30 天，可续借一次（+14 天）。库存为零的书目可排队预约，回架后优先办理。</p><p><b>数据</b>：预约、核销、归还、续借、选座与签到均写入云端共享数据库，并同步至本地 IndexedDB。</p>'],
       advanced: ['高级检索', '<p>组合条件：书名 / 作者 / 索书号 / 门类 / 馆藏地 / 借阅状态。</p><p>试试在检索框输入「明」「园」「I264」等关键词，或在左侧选择「古籍善本」+「四层特藏室」。</p>'],
       db: ['数据库说明', '<p>本站点采用 <b>云端共享事件日志 + 本地 IndexedDB 物化视图</b> 架构。</p><p><b>读</b>：拉取共享事件流 → 按事件 ID 去重、按服务段时间排序 → 在基线馆藏目录上重放，得到最新的库存、在借、预约与签到状态。</p><p><b>写</b>：借阅 / 归还 / 续借 / 预约 / 签到都作为一条不可变事件追加到云端，多位访客并发写入互不覆盖；离线时事件进入待发队列，恢复连接后自动补发。</p><div class="m-note">当前模式：' + (YueDuDB.state().mode === 'cloud' ? '云端共享（多访客数据互通）' : '本地离线') + ' · 已重放 ' + YueDuDB.state().events + ' 条事件 · 待发 ' + YueDuDB.state().pending + ' 条<br>云端公共通道缓存近期事件，本地 IndexedDB 长期保存完整状态；生产环境可替换为腾讯云开发 CloudBase 等正式数据库。</div>']
     };
@@ -441,10 +489,12 @@
         renderSeats(); InkFX.burst(e.clientX, e.clientY, 9); return;
       }
 
-      if (t.closest('[data-borrow]')) { borrow(t.closest('[data-borrow]').dataset.borrow, e); return; }
+      if (t.closest('[data-borrow]')) { reservePickup(t.closest('[data-borrow]').dataset.borrow, e); return; }
       if (t.closest('[data-wishlist]')) { addWish(t.closest('[data-wishlist]').dataset.wishlist); return; }
       if (t.closest('[data-renew]')) { renew(t.closest('[data-renew]').dataset.renew); return; }
       if (t.closest('[data-return]')) { returnBook(t.closest('[data-return]').dataset.return); return; }
+      if (t.closest('[data-pickup]')) { showPickup(t.closest('[data-pickup]').dataset.pickup); return; }
+      if (t.closest('[data-pickcancel]')) { cancelPickup(t.closest('[data-pickcancel]').dataset.pickcancel); return; }
 
       var act = t.closest('[data-action]');
       if (act) {

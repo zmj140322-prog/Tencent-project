@@ -58,6 +58,7 @@
         { id: 'l-seed-2', bookId: 'b5', title: '万历十五年', due: '11.15', renewable: true, createdAt: 0 }
       ],
       reservations: [],
+      pickups: [],
       wishlist: [],
       rooms: rooms,
       notices: [
@@ -77,7 +78,7 @@
   /* ---------------- 事件重放（幂等） ---------------- */
   function applyEvent(db, ev) {
     if (!ev || !ev.type) return;
-    var i, bk, l, r;
+    var i, bk, l, r, p;
     switch (ev.type) {
       case 'borrow':
         if ((db.loans || []).some(function (x) { return x.id === ev.loan.id; })) break;
@@ -115,6 +116,30 @@
       case 'checkin':
         r = (db.reservations || []).find(function (x) { return x.id === ev.resvId; });
         if (r) { r.checkedIn = true; r.checkinTime = ev.time; }
+        break;
+      case 'pickup':
+        /* 预约借阅：线上预约，不占库存，到馆核销后才真正借出 */
+        db.pickups = db.pickups || [];
+        if (!db.pickups.some(function (x) { return x.id === ev.item.id; })) db.pickups.push(ev.item);
+        break;
+      case 'pickup-cancel':
+        p = (db.pickups || []).find(function (x) { return x.id === ev.pickupId; });
+        if (p) p.cancelled = true;
+        break;
+      case 'pickup-fulfill':
+        /* 到馆办理：工作人员核销取书码 → 扣库存 → 生成在借记录 */
+        p = (db.pickups || []).find(function (x) { return x.id === ev.pickupId; });
+        if (p && !p.fulfilled) {
+          p.fulfilled = true; p.fulfilledAt = ev.ts || Date.now();
+          bk = db.books.find(function (x) { return x.id === (ev.bookId || p.bookId); });
+          if (bk && bk.stock > 0) {
+            bk.stock -= 1; bk.shelf = '在架 ' + bk.stock + ' 册'; bk.state = bk.stock > 0 ? '可借' : '已借出';
+          }
+          if (ev.loan && !(db.loans || []).some(function (x) { return x.id === ev.loan.id; })) {
+            db.loans = db.loans || [];
+            db.loans.push(ev.loan);
+          }
+        }
         break;
       default: break; // init / 未知类型：忽略但记入已读
     }
@@ -257,6 +282,7 @@
       return localGet().then(function (snapshot) {
         if (snapshot && snapshot.v === 2 && snapshot.db && snapshot.db.version) {
           cache = snapshot.db;
+          cache.pickups = cache.pickups || [];   // 旧快照迁移：补预约集合
           seen = snapshot.seen || [];
           pending = snapshot.pending || [];
           seen.forEach(function (id) { seenMap[id] = 1; });
