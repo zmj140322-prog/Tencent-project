@@ -16,6 +16,7 @@
     forecastSlot: 'pm', room: '三层古籍阅览室',
     picked: ['C-04', 'C-05'], fav: ['D-03'],
     seeded: false,
+    user: null,
     scan: { mode: 'borrow', stream: null, busy: false, matched: null, status: '', raw: '', error: null, pendingReturn: null }
   };
   var ROOMS = ['一层开架阅览室', '三层古籍阅览室', '四层特藏室'];
@@ -53,6 +54,148 @@
   function daysLeft(s) { return Math.max(0, Math.ceil((parseDue(s) - new Date().setHours(0, 0, 0, 0)) / 86400000)); }
   function addDays(n) { var d = new Date(); d.setDate(d.getDate() + n); return fmtDue(d); }
   function uid(p) { return p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
+
+  /* ================= 用户认证（管理者 / 读者 双身份） =================
+   * 账号数据存于服务端 data/users.json（密码加盐哈希，不存明文），
+   * 前端仅保存服务端签发的 HMAC token（7 天有效）。
+   * 读者：预约借阅 · 我的借阅 · 书评评分 · 选座签到；
+   * 管理员：以上全部 + 「我的借阅」扫码借还工作台与预约核销。   */
+  function authSave(token) { try { localStorage.setItem('yuedu-token', token); } catch (e) {} }
+  function authClear() { try { localStorage.removeItem('yuedu-token'); } catch (e) {} }
+  function authToken() { try { return localStorage.getItem('yuedu-token') || ''; } catch (e) { return ''; } }
+  function isAdmin() { return !!(S.user && S.user.role === 'admin'); }
+  function requireLogin(what) {
+    if (S.user) return true;
+    toast('请先登录' + (what ? '后再' + what : '') + ' · 右上角登录 / 注册');
+    openAuth('login');
+    return false;
+  }
+
+  function renderUserChip() {
+    var el = document.getElementById('userChip');
+    if (!el) return;
+    if (S.user) {
+      el.classList.add('logged');
+      el.innerHTML = '<span class="avatar">' + esc(S.user.nickname.charAt(0)) + '</span>' +
+        '<span class="uc-name">' + esc(S.user.nickname) + '</span>' +
+        '<span class="role-badge' + (S.user.role === 'admin' ? ' is-admin' : '') + '">' +
+        (S.user.role === 'admin' ? '管理员' : '读者') + '</span>' +
+        '<button class="uc-btn" data-auth="pass">改密</button>' +
+        '<button class="uc-btn" data-auth="logout">退出</button>';
+    } else {
+      el.classList.remove('logged');
+      el.innerHTML = '<button class="btn btn-outline uc-login" data-auth="open">登录 / 注册</button>';
+    }
+  }
+
+  function openAuth(mode, notice) {
+    mode = mode || 'login';
+    var tabs = '<div class="auth-tabs">' +
+      '<button class="auth-tab' + (mode === 'login' ? ' on' : '') + '" data-authtab="login">登 录</button>' +
+      '<button class="auth-tab' + (mode === 'register' ? ' on' : '') + '" data-authtab="register">注 册</button></div>';
+    var noticeHtml = notice ? '<p class="auth-notice">' + esc(notice) + '</p>' : '';
+    var body;
+    if (mode === 'register') {
+      body = tabs + noticeHtml +
+        '<div class="auth-form">' +
+        '<label>用户名<input id="authUser" maxlength="20" placeholder="2–20 位中文 / 字母 / 数字 / 下划线" autocomplete="username"></label>' +
+        '<label>昵称（选填）<input id="authNick" maxlength="20" placeholder="书评与借阅记录中展示"></label>' +
+        '<label>密码<input id="authPass" type="password" maxlength="40" placeholder="至少 6 位" autocomplete="new-password"></label>' +
+        '<label>确认密码<input id="authPass2" type="password" maxlength="40" placeholder="再输入一次" autocomplete="new-password"></label>' +
+        '<button class="btn btn-primary btn-block" data-authdo="register">注 册</button>' +
+        '<p class="auth-note">注册即成为「读者」身份：可预约借阅、管理我的借阅、发布书评、选座签到。<br>管理员账号由馆方开设，请切换到「登录」。</p></div>';
+    } else {
+      body = tabs + noticeHtml +
+        '<div class="auth-form">' +
+        '<label>用户名<input id="authUser" maxlength="20" placeholder="用户名" autocomplete="username"></label>' +
+        '<label>密码<input id="authPass" type="password" maxlength="40" placeholder="密码" autocomplete="current-password"></label>' +
+        '<button class="btn btn-primary btn-block" data-authdo="login">登 录</button>' +
+        '<p class="auth-note">读者：预约借阅 · 我的借阅 · 书评评分 · 选座签到<br>管理员：以上全部 + 扫码借还工作台与预约核销</p></div>';
+    }
+    modal(mode === 'register' ? '注册读者账号' : '登录 · 悦读', body);
+    var u = document.getElementById('authUser');
+    if (u) u.focus();
+  }
+
+  var AUTH_LABELS = { login: '登 录', register: '注 册', pass: '确认修改' };
+  function authBusy(on, kind) {
+    var b = document.querySelector('[data-authdo="' + kind + '"]');
+    if (b) { b.disabled = on; b.textContent = on ? '请稍候…' : AUTH_LABELS[kind]; }
+  }
+
+  async function doAuth(kind) {
+    var uEl = document.getElementById('authUser'), pEl = document.getElementById('authPass');
+    var username = uEl ? uEl.value.trim() : '', password = pEl ? pEl.value : '';
+    if (!username || !password) { toast('请输入用户名与密码'); return; }
+    var body = { username: username, password: password };
+    if (kind === 'register') {
+      var nickEl = document.getElementById('authNick'), p2El = document.getElementById('authPass2');
+      if ((p2El ? p2El.value : '') !== password) { toast('两次输入的密码不一致'); return; }
+      body.nickname = ((nickEl && nickEl.value) || '').trim();
+    }
+    authBusy(true, kind);
+    try {
+      var r = await fetch('/api/auth/' + kind, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      var data = await r.json().catch(function () { return {}; });
+      if (!data.ok) throw new Error(data.error || ('请求失败（HTTP ' + r.status + '）'));
+      authSave(data.token);
+      S.user = data.user;
+      closeModal();
+      toast('欢迎' + (kind === 'register' ? '注册，读者' : '') + '，' + S.user.nickname +
+        (S.user.role === 'admin' ? '（管理员）' : ''));
+      renderUserChip(); renderAll();
+    } catch (err) {
+      toast(err && err.message ? err.message : '登录服务不可用，请通过 node server.js 访问本站');
+      authBusy(false, kind);
+    }
+  }
+
+  function doLogout() {
+    S.user = null; authClear(); renderUserChip(); renderAll();
+    toast('已退出登录');
+  }
+
+  function openPassModal() {
+    if (!S.user) return;
+    modal('修改密码',
+      '<div class="auth-form">' +
+      '<label>原密码<input id="passOld" type="password" maxlength="40" autocomplete="current-password"></label>' +
+      '<label>新密码<input id="passNew" type="password" maxlength="40" placeholder="至少 6 位" autocomplete="new-password"></label>' +
+      '<label>确认新密码<input id="passNew2" type="password" maxlength="40" autocomplete="new-password"></label>' +
+      '<button class="btn btn-primary btn-block" data-authdo="pass">确认修改</button></div>');
+  }
+  async function doChangePassword() {
+    var o = document.getElementById('passOld'), n = document.getElementById('passNew'), n2 = document.getElementById('passNew2');
+    if (!o || !n) return;
+    if (n.value !== (n2 ? n2.value : '')) { toast('两次输入的新密码不一致'); return; }
+    authBusy(true, 'pass');
+    try {
+      var r = await fetch('/api/auth/password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: authToken(), oldPassword: o.value, newPassword: n.value })
+      });
+      var data = await r.json().catch(function () { return {}; });
+      if (!data.ok) throw new Error(data.error || '修改失败');
+      closeModal(); toast('密码已修改，请妥善保管');
+    } catch (err) {
+      toast(err && err.message ? err.message : '修改失败');
+      authBusy(false, 'pass');
+    }
+  }
+
+  /* 启动时恢复会话：本地 token → 服务端校验 */
+  async function restoreSession() {
+    var t = authToken();
+    if (!t) { renderUserChip(); return; }
+    try {
+      var r = await fetch('/api/auth/me?token=' + encodeURIComponent(t));
+      var data = await r.json().catch(function () { return {}; });
+      if (data.ok) S.user = data.user; else authClear();
+    } catch (e) { /* 服务未启动：保持未登录，站点功能不受影响 */ }
+    renderUserChip();
+  }
 
   /* ---------------- 日期 ---------------- */
   function renderDates() {
@@ -266,7 +409,7 @@
       renderRank(); renderNotices(); renderLoans(); renderFeature();
       renderForecast(); renderFilters(); renderResults();
       renderRoomTabs(); renderSeats(); renderCheckin();
-      renderStatus();
+      renderStatus(); renderUserChip();
       if (S.page === 'loans') renderLoansPage();
     });
   }
@@ -276,6 +419,7 @@
     return (db.pickups || []).filter(function (p) { return !p.fulfilled && !p.cancelled; });
   }
   function reservePickup(bookId, ev) {
+    if (!requireLogin('预约借阅')) return;
     var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === bookId; });
     if (!b) return;
     if ((db.loans || []).some(function (l) { return l.bookId === bookId; })) { toast('该书已在您的借阅中'); return; }
@@ -299,11 +443,14 @@
       '<p>请向工作人员出示取书码，办理《<b>' + esc(p.title) + '</b>》的借出手续：</p>' +
       '<div style="text-align:center;font-size:22px;letter-spacing:2px;margin:10px 0"><b>' + esc(p.code) + '</b></div>' +
       '<div id="pickupQr" style="width:110px;height:110px;margin:0 auto 6px;border:1px solid #DED3BE;padding:6px;background:#fff"></div>' +
-      '<div class="m-note">取书码保留 3 天，逾期预约自动取消；此二维码为演示码，正式部署时由馆内扫码终端读取。</div>',
-      [{ label: '工作人员核销（演示）', primary: true, onClick: function () { fulfillPickup(id); } }, { label: '稍后办理' }]);
+      '<div class="m-note">取书码保留 3 天，逾期预约自动取消；到馆后由工作人员核销办理。</div>',
+      (isAdmin()
+        ? [{ label: '工作人员核销', primary: true, onClick: function () { fulfillPickup(id); } }, { label: '稍后办理' }]
+        : [{ label: '稍后办理', primary: true }]));
     InkFX.qr($('#pickupQr'), p.code);
   }
   function fulfillPickup(id) {
+    if (!isAdmin()) { toast('预约核销须由管理员（工作人员）办理'); return; }
     var db = YueDuDB.get();
     var p = activePickups(db).find(function (x) { return x.id === id; });
     if (!p) return;
@@ -321,6 +468,7 @@
     });
   }
   function cancelPickup(id) {
+    if (!requireLogin('取消预约')) return;
     var p = activePickups(YueDuDB.get()).find(function (x) { return x.id === id; });
     if (!p) return;
     YueDuDB.commit({ type: 'pickup-cancel', pickupId: id })
@@ -379,15 +527,17 @@
       [{ label: b.stock > 0 ? '预约借阅' : '排队预约', primary: true, onClick: function () { reservePickup(id); } }, { label: '关闭' }]);
   }
   function readerName() {
+    if (S.user) return S.user.nickname;
     try { return localStorage.getItem('yuedu-reader-name') || ''; } catch (e) { return ''; }
   }
   function postReview(bookId) {
+    if (!requireLogin('发布书评')) return;
     var rating = S.revDraft && S.revDraft.bookId === bookId ? S.revDraft.rating : 0;
     if (!rating) { toast('请先点选评分星级'); return; }
     var nameEl = document.getElementById('revName'), textEl = document.getElementById('revText');
-    var name = ((nameEl && nameEl.value) || '').trim() || '匿名读者';
+    var name = ((nameEl && nameEl.value) || '').trim() || (S.user ? S.user.nickname : '匿名读者');
     var text = ((textEl && textEl.value) || '').trim();
-    try { localStorage.setItem('yuedu-reader-name', name); } catch (e) { /* 隐私模式忽略 */ }
+    if (!S.user) { try { localStorage.setItem('yuedu-reader-name', name); } catch (e) { /* 隐私模式忽略 */ } }
     YueDuDB.commit({
       type: 'review',
       item: { id: uid('rv'), bookId: bookId, user: name, rating: rating, content: text, time: Date.now() }
@@ -445,6 +595,22 @@
     if (!box) return;
     var sc = S.scan;
     $$('#scanModePills .mode-pill').forEach(function (b) { b.classList.toggle('on', b.dataset.v === sc.mode); });
+    /* 权限门槛：扫码借还工作台仅限管理员（工作人员） */
+    if (!isAdmin()) {
+      var st0 = document.getElementById('scanStateNote');
+      if (st0) st0.textContent = '工作人员操作台 · 未授权';
+      var sb0 = document.getElementById('scanBtns');
+      if (sb0) sb0.innerHTML = '<button class="btn btn-primary" disabled>开启摄像头（仅管理员）</button>';
+      var man0 = document.querySelector('.manual-locate');
+      if (man0) man0.style.display = 'none';
+      box.innerHTML = '<div class="scan-idle admin-gate"><b>工作人员操作台 · 仅限管理员使用</b><br>' +
+        (S.user
+          ? '您当前是「读者」身份，借出 / 归还核销请由馆内管理员办理'
+          : '请先在右上角登录管理员账号（默认 admin / admin123）') + '</div>';
+      return;
+    }
+    var manEl = document.querySelector('.manual-locate');
+    if (manEl) manEl.style.display = '';
     $('#scanBtns').innerHTML = (sc.stream
       ? '<button class="btn btn-primary" data-scan="camShot">拍摄并识别</button><button class="btn btn-ghost" data-scan="camStop">关闭摄像头</button>'
       : '<button class="btn btn-primary" data-scan="camStart">开启摄像头</button>')
@@ -630,6 +796,7 @@
 
   /* 确认借出 / 归还登记（事件溯源写入） */
   function confirmScan() {
+    if (!isAdmin()) { toast('借还核销须由管理员（工作人员）办理'); return; }
     var sc = S.scan, b = sc.matched;
     if (!b) return;
     var db = YueDuDB.get();
@@ -675,6 +842,7 @@
 
   /* 取消借阅：撤销在借记录，库存即时回架 */
   function cancelLoan(id) {
+    if (!requireLogin('取消借阅')) return;
     var l = (YueDuDB.get().loans || []).find(function (x) { return x.id === id; });
     if (!l) return;
     modal('取消借阅', '<p>确认取消《<b>' + esc(l.title) + '》的借阅？</b></p>' +
@@ -685,6 +853,7 @@
       } }, { label: '再想想' }]);
   }
   function addWish(bookId) {
+    if (!requireLogin('加入书单')) return;
     var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === bookId; });
     if (!b) return;
     if ((db.wishlist || []).some(function (w) { return w.bookId === bookId && w.type === 'wish'; })) {
@@ -694,6 +863,7 @@
       .then(function () { toast('《' + b.title + '》已加入我的书单'); });
   }
   function renew(id) {
+    if (!requireLogin('续借')) return;
     var l = (YueDuDB.get().loans || []).find(function (x) { return x.id === id; });
     if (!l) return;
     var cur = parseDue(l.due); cur.setDate(cur.getDate() + 14);
@@ -703,6 +873,7 @@
   /* 归还办理：不能一键完成 —— 引导到扫码台，扫描该书标签/封面，
      或输入还书码 / 书名，识别匹配后才可确认归还 */
   function returnBook(id) {
+    if (!requireLogin('发起归还')) return;
     var l = (YueDuDB.get().loans || []).find(function (x) { return x.id === id; });
     if (!l) return;
     if (S.page !== 'loans') location.hash = '#/loans';
@@ -718,6 +889,7 @@
     toast('请扫描《' + l.title + '》的标签或封面，或输入还书码 ' + (l.code || '—') + ' 完成归还');
   }
   function confirmResv(ev) {
+    if (!requireLogin('选座预约')) return;
     if (!S.picked.length) return;
     var seats = S.picked.slice().sort(), room = S.room;
     var code = 'YD-' + Date.now().toString(36).toUpperCase();
@@ -739,6 +911,7 @@
     });
   }
   function checkIn() {
+    if (!requireLogin('到馆签到')) return;
     var db = YueDuDB.get();
     var active = (db.reservations || []).filter(function (r) { return !r.checkedIn; }).slice(-1)[0];
     if (!active) {
@@ -836,6 +1009,26 @@
       var hot = t.closest('[data-hot]');
       if (hot) { S.query = hot.dataset.hot; S.pageNo = 1; $('#searchInput').value = S.query; renderResults(); toast('热门检索：' + S.query); return; }
 
+      /* ---- 用户认证入口（登录 / 注册 / 退出 / 改密） ---- */
+      var at = t.closest('[data-auth]');
+      if (at) {
+        var av = at.dataset.auth;
+        if (av === 'open') openAuth('login');
+        else if (av === 'logout') doLogout();
+        else if (av === 'pass') openPassModal();
+        return;
+      }
+      var atab = t.closest('[data-authtab]');
+      if (atab) { openAuth(atab.dataset.authtab); return; }
+      var ado = t.closest('[data-authdo]');
+      if (ado) {
+        var ak = ado.dataset.authdo;
+        if (ak === 'login') doAuth('login');
+        else if (ak === 'register') doAuth('register');
+        else if (ak === 'pass') doChangePassword();
+        return;
+      }
+
       var fil = t.closest('[data-filter]');
       if (fil) {
         S[fil.dataset.filter] = fil.dataset.value; S.pageNo = 1;
@@ -886,7 +1079,7 @@
         var sv = scb.dataset.scan;
         if (sv === 'mode') { S.scan.mode = scb.dataset.v; S.scan.matched = null; S.scan.error = null; S.scan.status = ''; S.scan.source = ''; if (S.scan.mode === 'borrow') S.scan.pendingReturn = null; renderScan(); return; }
         if (sv === 'clearPending') { S.scan.pendingReturn = null; S.scan.matched = null; S.scan.error = null; renderScan(); toast('已放弃本次归还办理'); return; }
-        if (sv === 'camStart') { startScanCam(); return; }
+        if (sv === 'camStart') { if (!isAdmin()) { toast('扫码台仅限管理员（工作人员）使用'); return; } startScanCam(); return; }
         if (sv === 'camStop') { stopScanCam(); S.scan.matched = null; renderScan(); return; }
         if (sv === 'camShot') { shotScanCam(); return; }
         if (sv === 'manual') { manualLocate(); return; }
@@ -931,6 +1124,7 @@
   bind();
   renderAll();
   route();
+  restoreSession();
   YueDuDB.init().then(function () {
     renderAll();
     // 首页首次进入时给粒子一点轻微扰动，暗示可交互
