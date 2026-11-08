@@ -107,20 +107,38 @@
     el.classList.toggle('ok', !!ok);
   }
 
-  function openAuth() {
+  function openAuth(mode) {
     if (!cloud) {
       modal('登录 · 悦读', '<p class="auth-notice">云服务组件未加载，请检查网络后刷新页面重试。</p>');
       return;
     }
+    mode = mode === 'email' ? 'email' : 'phone';
+    var tabs = '<div class="auth-tabs">' +
+      '<button class="auth-tab' + (mode === 'phone' ? ' on' : '') + '" data-authmode="phone">手机验证码</button>' +
+      '<button class="auth-tab' + (mode === 'email' ? ' on' : '') + '" data-authmode="email">邮箱登录</button></div>';
+    var body;
+    if (mode === 'email') {
+      body = tabs +
+        '<div class="auth-form">' +
+        '<label>邮箱<input id="authEmail" type="email" maxlength="60" placeholder="name@example.com" autocomplete="email"></label>' +
+        '<label>邮箱验证码<span class="code-row"><input id="authCode" maxlength="8" placeholder="邮件验证码" autocomplete="one-time-code"><button type="button" class="btn btn-outline" data-authdo="sendemailcode">获取验证码</button></span></label>' +
+        '<label>设置密码（选填，仅新账号注册时生效）<input id="authPass" type="password" maxlength="40" placeholder="新账号可设置密码，下次直接密码登录" autocomplete="new-password"></label>' +
+        '<button class="btn btn-primary btn-block" data-authdo="emailotp">登 录 / 注 册</button>' +
+        '<div class="auth-alt">已有密码的老账号：</div>' +
+        '<button class="btn btn-outline btn-block" data-authdo="pw">邮箱 + 密码 登录</button>' +
+        '<p class="auth-note">用不同邮箱各注册一次即得到多个测试账号；新账号验证码验证后自动注册<br>读者登录后可点右上角「管理员认证」输入口令升级管理员</p></div>';
+    } else {
+      body = tabs +
+        '<div class="auth-form">' +
+        '<label>手机号<input id="authPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号 · 新号验证后自动注册" autocomplete="tel"></label>' +
+        '<label>短信验证码<span class="code-row"><input id="authCode" maxlength="8" placeholder="4–8 位验证码" autocomplete="one-time-code"><button type="button" class="btn btn-outline" data-authdo="sendcode">获取验证码</button></span></label>' +
+        '<button class="btn btn-primary btn-block" data-authdo="otp">登 录 / 注 册</button>' +
+        '<p class="auth-note">新手机号验证后自动注册；读者登录后可点右上角「管理员认证」输入口令开通管理员</p></div>';
+    }
     modal('登录 · 悦读',
-      '<p class="auth-notice" id="authErr" style="display:none"></p>' +
-      '<div class="auth-form">' +
-      '<label>手机号<input id="authPhone" type="tel" inputmode="numeric" maxlength="11" placeholder="11 位手机号 · 新号验证后自动注册" autocomplete="tel"></label>' +
-      '<label>短信验证码<span class="code-row"><input id="authCode" maxlength="8" placeholder="4–8 位验证码" autocomplete="one-time-code"><button type="button" class="btn btn-outline" data-authdo="sendcode">获取验证码</button></span></label>' +
-      '<button class="btn btn-primary btn-block" data-authdo="otp">登 录 / 注 册</button>' +
-      '<button class="btn btn-outline btn-block" data-authdo="wechat">微信扫码登录</button>' +
-      '<p class="auth-note">读者登录后：预约借阅 · 我的借阅 · 书评评分 · 选座签到<br>管理员：登录后点右上角「管理员认证」输入口令开通，可使用扫码借还工作台与预约核销</p></div>');
-    var p = document.getElementById('authPhone');
+      '<p class="auth-notice" id="authErr" style="display:none"></p>' + body +
+      '<button class="btn btn-outline btn-block" data-authdo="wechat">微信扫码登录</button>');
+    var p = document.getElementById(mode === 'email' ? 'authEmail' : 'authPhone');
     if (p) p.focus();
   }
 
@@ -189,6 +207,61 @@
     authBusyFlag = false;
   }
 
+  /* 邮箱验证码：sendOtp 签发后凭 verificationId 验证；新邮箱验证后自动注册，
+   * 注册时可同时设置密码（显式密码认证），之后可走「邮箱 + 密码」登录 */
+  var pendingEmailOtp = null;
+
+  async function sendEmailCode() {
+    if (authBusyFlag) return;
+    var email = ((document.getElementById('authEmail') || {}).value || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { authMsg('请输入正确的邮箱地址'); return; }
+    authMsg('');
+    authBusyFlag = true;
+    var btn = document.querySelector('[data-authdo="sendemailcode"]');
+    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
+    try {
+      var sent = await cloud.auth.sendOtp({ email: email });
+      if (sent.error) throw sent.error;
+      pendingEmailOtp = { email: email, verificationId: sent.data.verificationId, isExistingUser: !!sent.data.isExistingUser };
+      startCountdown(60);
+      authMsg('验证码已发送到邮箱' + (pendingEmailOtp.isExistingUser ? '' : '，新邮箱将自动注册'), true);
+      var p = document.getElementById('authPass');
+      if (p && pendingEmailOtp.isExistingUser) p.closest('label').style.display = 'none';
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '获取验证码'; }
+      authMsg('验证码发送失败：' + (err && err.message ? err.message : '请稍后再试'));
+    }
+    authBusyFlag = false;
+  }
+
+  async function submitEmailLogin() {
+    if (authBusyFlag) return;
+    var email = ((document.getElementById('authEmail') || {}).value || '').trim();
+    var token = ((document.getElementById('authCode') || {}).value || '').trim();
+    var pass = (document.getElementById('authPass') || {}).value || '';
+    var pending = pendingEmailOtp;
+    if (!pending || pending.email !== email) { authMsg('请先为当前邮箱获取验证码'); return; }
+    if (!/^\d{4,8}$/.test(token)) { authMsg('请输入收到的邮箱验证码'); return; }
+    authMsg('');
+    authBusyFlag = true;
+    var btn = document.querySelector('[data-authdo="emailotp"]');
+    if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+    try {
+      var done = await cloud.auth.verifyOtp({
+        email: pending.email, verificationId: pending.verificationId,
+        isExistingUser: pending.isExistingUser, token: token,
+        password: (!pending.isExistingUser && pass) ? pass : undefined
+      });
+      if (done.error) throw done.error;
+      pendingEmailOtp = null;
+      await afterSignIn(done.data && done.data.user);
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '登 录 / 注 册'; }
+      authMsg('登录失败：' + (err && err.message ? err.message : '请稍后再试'));
+    }
+    authBusyFlag = false;
+  }
+
   async function wechatLogin() {
     if (!cloud || typeof cloud.auth.signInWithOAuth !== 'function') { authMsg('当前版本暂不支持微信登录'); return; }
     try {
@@ -202,6 +275,27 @@
     } catch (err) {
       authMsg('微信登录暂不可用：' + (err && err.message ? err.message : '微信授权需在正式发布域名下使用'));
     }
+  }
+
+  async function submitPasswordLogin() {
+    if (authBusyFlag) return;
+    var email = ((document.getElementById('authEmail') || {}).value || '').trim();
+    var pass = (document.getElementById('authPass') || {}).value || '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { authMsg('请输入正确的邮箱地址'); return; }
+    if (!pass) { authMsg('请输入密码'); return; }
+    authMsg('');
+    authBusyFlag = true;
+    var btn = document.querySelector('[data-authdo="pw"]');
+    if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
+    try {
+      var done = await cloud.auth.signInWithPassword({ email: email, password: pass });
+      if (done.error) throw done.error;
+      await afterSignIn(done.data && done.data.user);
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
+      authMsg('登录失败：' + (err && err.message ? err.message : '账号或密码不正确'));
+    }
+    authBusyFlag = false;
   }
 
   async function afterSignIn(u) {
@@ -1164,10 +1258,15 @@
         var ak = ado.dataset.authdo;
         if (ak === 'sendcode') sendPhoneCode();
         else if (ak === 'otp') submitPhoneLogin();
+        else if (ak === 'sendemailcode') sendEmailCode();
+        else if (ak === 'emailotp') submitEmailLogin();
+        else if (ak === 'pw') submitPasswordLogin();
         else if (ak === 'wechat') wechatLogin();
         else if (ak === 'claim') claimAdmin();
         return;
       }
+      var amode = t.closest('[data-authmode]');
+      if (amode) { openAuth(amode.dataset.authmode); return; }
 
       var fil = t.closest('[data-filter]');
       if (fil) {
