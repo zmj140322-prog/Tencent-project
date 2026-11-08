@@ -15,7 +15,8 @@
     sort: 'relevance', pageNo: 1, perPage: 10,
     forecastSlot: 'pm', room: '三层古籍阅览室',
     picked: ['C-04', 'C-05'], fav: ['D-03'],
-    seeded: false
+    seeded: false,
+    scan: { mode: 'borrow', stream: null, busy: false, matched: null, status: '', raw: '', error: null }
   };
   var ROOMS = ['一层开架阅览室', '三层古籍阅览室', '四层特藏室'];
   var ROWS = ['A', 'B', 'C', 'D', 'E'];
@@ -91,7 +92,8 @@
   function renderLoans() {
     var db = YueDuDB.get(), loans = (db.loans || []).slice().reverse();
     var picks = activePickups(db).slice().reverse();
-    $('.panel-note', $('#loansPanel')).textContent = '在借 ' + loans.length + ' 册 · 待办理 ' + picks.length + ' 册 · 最多 6 册';
+    var noteEl = document.getElementById('loansNote');
+    if (noteEl) noteEl.textContent = '在借 ' + loans.length + ' 册 · 待办理 ' + picks.length + ' 册 · 最多 6 册';
     var pickHtml = picks.map(function (p) {
       return '<li><span class="loan-spine red"></span>' +
         '<div class="loan-body"><strong>《' + esc(p.title) + '》</strong>' +
@@ -256,6 +258,7 @@
       renderForecast(); renderFilters(); renderResults();
       renderRoomTabs(); renderSeats(); renderCheckin();
       renderStatus();
+      if (S.page === 'loans') renderLoansPage();
     });
   }
 
@@ -313,6 +316,265 @@
     if (!p) return;
     YueDuDB.commit({ type: 'pickup-cancel', pickupId: id })
       .then(function () { toast('《' + p.title + '》的预约已取消'); renderAll(); });
+  }
+
+  /* ================= 我的借阅独立版块（预约办理 · 在借管理 · 扫码借还） ================= */
+  function renderLoansPage() {
+    var db = YueDuDB.get();
+    var picks = activePickups(db), loans = db.loans || [];
+    var note = document.getElementById('loansPageNote');
+    if (note) note.textContent = '到馆预约 ' + picks.length + ' 项 · 在借 ' + loans.length + ' 册 · 合计最多 6 册 · 借还办理集中于此';
+    var pn = document.getElementById('pickupNote');
+    if (pn) pn.textContent = picks.length ? '共 ' + picks.length + ' 项待办理' : '暂无待办理预约';
+    var ln = document.getElementById('loanNote');
+    if (ln) ln.textContent = '在借 ' + loans.length + ' 册 · 最多 6 册';
+    var pickHtml = picks.slice().reverse().map(function (p) {
+      var created = new Date(p.createdAt || Date.now());
+      return '<li><span class="loan-spine red"></span>' +
+        '<div class="loan-body"><strong>《' + esc(p.title) + '》</strong>' +
+        '<small>取书码 <b>' + esc(p.code) + '</b> · 预约于 ' + (created.getMonth() + 1) + '.' + created.getDate() + ' · 待到馆办理</small></div>' +
+        '<div class="loan-actions"><button data-pickup="' + esc(p.id) + '">出码办理</button>' +
+        '<button data-pickcancel="' + esc(p.id) + '">取消预约</button></div></li>';
+    }).join('');
+    $('#pickupList').innerHTML = pickHtml || '<li class="empty-note">暂无到馆预约，去藏书检索预约一本吧</li>';
+    var loanHtml = loans.slice().reverse().map(function (l, i) {
+      var left = daysLeft(l.due);
+      return '<li><span class="loan-spine' + (i % 2 ? ' red' : '') + '"></span>' +
+        '<div class="loan-body"><strong>《' + esc(l.title) + '》</strong>' +
+        '<small>应还 ' + esc(l.due) + ' · 剩余 <b>' + left + '</b> 天' + (left <= 3 ? ' · 即将到期' : '') + '</small></div>' +
+        '<div class="loan-actions">' +
+        (l.renewable ? '<button data-renew="' + esc(l.id) + '">续借</button>' : '') +
+        '<button data-return="' + esc(l.id) + '">归还</button>' +
+        '<button data-loancancel="' + esc(l.id) + '">取消借阅</button></div></li>';
+    }).join('');
+    $('#loanFullList').innerHTML = loanHtml || '<li class="empty-note">暂无在借图书，去藏书检索预约一本吧</li>';
+    renderScan();
+  }
+
+  function resetScan() {
+    var sc = S.scan;
+    sc.matched = null; sc.error = null; sc.raw = ''; sc.status = ''; sc.busy = false;
+  }
+
+  function renderScan() {
+    var box = document.getElementById('scanResult');
+    if (!box) return;
+    var sc = S.scan;
+    $$('#scanModePills .mode-pill').forEach(function (b) { b.classList.toggle('on', b.dataset.v === sc.mode); });
+    $('#scanBtns').innerHTML = (sc.stream
+      ? '<button class="btn btn-primary" data-scan="camShot">拍摄并识别</button><button class="btn btn-ghost" data-scan="camStop">关闭摄像头</button>'
+      : '<button class="btn btn-primary" data-scan="camStart">开启摄像头</button>')
+      + '<button class="btn btn-ghost file-btn">上传标签照片<input type="file" id="scanFile" accept="image/*"></button>';
+    var hint = document.getElementById('camHintText');
+    if (hint) hint.innerHTML = sc.stream
+      ? '摄像头已开启 · 对准图书标签拍摄'
+      : '先开启摄像头，将图书标签对准取景框<br>没有摄像头也可以直接上传标签照片';
+    $('#scanCam').classList.toggle('live', !!sc.stream);
+    var st = document.getElementById('scanStateNote');
+    if (st) st.textContent = sc.busy ? '正在识别…' : (sc.mode === 'borrow' ? '模式：借出登记' : '模式：归还登记');
+
+    var html = '';
+    if (sc.busy) {
+      html = '<div class="scan-spin"><i></i>正在识别标签…</div>';
+    } else if (sc.error) {
+      html = '<div class="scan-err">' + esc(sc.error) + '</div>';
+    } else if (sc.matched) {
+      var b = sc.matched, db = YueDuDB.get();
+      var pick = activePickups(db).filter(function (p) { return p.bookId === b.id; })[0];
+      var onLoan = (db.loans || []).some(function (l) { return l.bookId === b.id; });
+      var note = sc.mode === 'borrow'
+        ? (pick
+            ? '该书有到馆预约 · 确认后核销取书码 ' + esc(pick.code) + ' 并登记借出（借期 30 天）'
+            : (b.stock > 0
+                ? '该书暂无到馆预约 · 在架 ' + b.stock + ' 册，可直接办理借出（借期 30 天）'
+                : '该书暂无到馆预约 · 在架 0 册，暂不能办理借出'))
+        : (onLoan ? '该书有在借记录，确认后将登记归还' : '该书当前没有在借记录，无需归还');
+      var spine = b.spine || b.title, half = Math.ceil(spine.length / 2);
+      html = '<div class="match-card">' +
+        '<div class="book-spine" style="background:' + b.color + '">' + esc(spine.slice(0, half)) + '<br>' + esc(spine.slice(half)) + '</div>' +
+        '<div class="match-info"><b>《' + esc(b.title) + '》</b>' +
+        '<div class="match-meta">' + esc(b.author) + ' · ' + esc(b.publisher) + ' ' + b.year + ' · ' + esc(b.callNo) + ' · 在架 ' + b.stock + ' / ' + b.total + ' 册</div>' +
+        (sc.status ? '<span class="match-status">标签状态：' + esc(sc.status) + '</span>' : '') +
+        '<div class="match-note">' + note + '</div>' +
+        '<div class="match-act"><button class="btn ' + (sc.mode === 'borrow' && (!pick && (b.stock <= 0 || onLoan)) ? 'btn-ghost' : 'btn-primary') + '" data-scan="confirm">' +
+        (sc.mode === 'borrow' ? '确认借出 · ' + esc(b.title) : '确认归还 · ' + esc(b.title)) + '</button></div>' +
+        '<div class="match-raw">' + (sc.raw ? '模型原始返回：' + esc(sc.raw) : '来源：手动定位') + '</div>' +
+        '</div></div>';
+    } else {
+      html = '<div class="scan-idle">拍摄或上传图书标签后<br>识别结果会显示在这里</div>';
+    }
+    box.innerHTML = html;
+  }
+
+  /* ---- 摄像头与识别（移植自云图书馆扫码台） ---- */
+  function startScanCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast('当前环境不支持摄像头，可上传标签照片或手动定位'); return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false
+    }).then(function (stream) {
+      S.scan.stream = stream; S.scan.error = null; S.scan.matched = null;
+      renderScan();
+      var v = document.getElementById('scanVideo');
+      if (v) v.srcObject = stream;
+    }).catch(function () {
+      toast('摄像头开启失败，可改用上传照片或手动定位');
+    });
+  }
+  function stopScanCam() {
+    if (S.scan.stream) {
+      S.scan.stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+      S.scan.stream = null;
+    }
+  }
+  function shotScanCam() {
+    var v = document.getElementById('scanVideo');
+    if (!v || !v.videoWidth) { toast('摄像头画面还未就绪'); return; }
+    var c = document.createElement('canvas');
+    var scale = Math.min(1, 900 / v.videoWidth);
+    c.width = Math.round(v.videoWidth * scale);
+    c.height = Math.round(v.videoHeight * scale);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    recognizeScan(c.toDataURL('image/jpeg', 0.85));
+  }
+  function fileScan(input) {
+    var f = input.files && input.files[0];
+    if (!f) return;
+    var img = new Image();
+    img.onload = function () {
+      var scale = Math.min(1, 900 / img.width);
+      var c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      input.value = '';
+      recognizeScan(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = function () { toast('图片读取失败'); };
+    img.src = URL.createObjectURL(f);
+  }
+
+  var LABEL_PROMPT = '这是图书馆图书标签的照片。标签上通常印有书名（可能带书名号《》），并可能标注状态文字（如"借阅""借出""归还""还书""在库"）。请识别图片内容，只返回一个 JSON 对象，不要任何解释文字或 markdown 代码块，格式：{"title":"识别出的书名，不含书名号","status":"标签上的状态文字，没有则为空字符串","confidence":"high或medium或low"}';
+
+  async function recognizeScan(dataUrl) {
+    var sc = S.scan;
+    if (sc.busy) return;
+    sc.busy = true; sc.matched = null; sc.error = null; sc.raw = '';
+    renderScan();
+    try {
+      var r = await fetch('/api/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl, prompt: LABEL_PROMPT })
+      });
+      var data = await r.json().catch(function () { return {}; });
+      if (!data.ok) throw new Error(data.error || ('识别服务不可用（HTTP ' + r.status + '）'));
+      applyScanResult(String(data.content || ''));
+    } catch (err) {
+      sc.busy = false;
+      sc.error = '识别失败：' + (err && err.message ? err.message : '网络异常') + '。可用下方「手动定位」输入书名完成登记。';
+      renderScan();
+    }
+  }
+
+  function applyScanResult(content) {
+    var sc = S.scan;
+    sc.busy = false; sc.raw = content;
+    var obj = null;
+    try {
+      var t = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      var a = t.indexOf('{'), bIdx = t.lastIndexOf('}');
+      if (a >= 0 && bIdx > a) obj = JSON.parse(t.slice(a, bIdx + 1));
+    } catch (e) { /* 忽略 */ }
+    if (!obj || !obj.title) {
+      sc.error = '没有识别出图书标签，请确认照片清晰后重试，或使用手动定位';
+      sc.matched = null; renderScan(); return;
+    }
+    sc.status = String(obj.status || '');
+    sc.matched = matchBook(obj.title);
+    if (!sc.matched) {
+      sc.error = '识别出书名「' + obj.title + '」，但馆藏中找不到这本书，请核对后重试';
+    }
+    renderScan();
+  }
+
+  /* 书名模糊匹配馆藏：精确 → 包含 → 索书号 */
+  function matchBook(title) {
+    var norm = function (s) { return String(s).replace(/[《》\s“”‘’·.。,:：!！?？\-—_]/g, '').toLowerCase(); };
+    var t = norm(title);
+    if (!t) return null;
+    var books = YueDuDB.get().books || [];
+    return books.find(function (b) { return norm(b.title) === t; })
+        || books.find(function (b) { return norm(b.title).indexOf(t) >= 0 || t.indexOf(norm(b.title)) >= 0; })
+        || books.find(function (b) { return b.callNo && norm(b.callNo) === t; })
+        || null;
+  }
+
+  function manualLocate() {
+    var input = document.getElementById('scanManual');
+    var q = (input && input.value || '').trim();
+    if (!q) { toast('请输入书名或索书号'); return; }
+    var b = matchBook(q);
+    if (!b) {
+      S.scan.error = '馆藏中找不到「' + q + '」，请核对后重试';
+      S.scan.matched = null; S.scan.raw = ''; S.scan.status = '';
+      renderScan(); return;
+    }
+    S.scan.error = null; S.scan.status = ''; S.scan.raw = ''; S.scan.matched = b;
+    renderScan();
+  }
+
+  /* 确认借出 / 归还登记（事件溯源写入） */
+  function confirmScan() {
+    var sc = S.scan, b = sc.matched;
+    if (!b) return;
+    var db = YueDuDB.get();
+    if (sc.mode === 'borrow') {
+      var pick = activePickups(db).filter(function (p) { return p.bookId === b.id; })[0];
+      if (pick) {
+        if (b.stock <= 0) { toast('该书在架 0 册，暂不能办理借出'); return; }
+        var due = addDays(30);
+        YueDuDB.commit({ type: 'pickup-fulfill', pickupId: pick.id, bookId: b.id,
+          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due, renewable: true, createdAt: Date.now() }
+        }).then(function () {
+          resetScan(); renderScan(); renderAll();
+          toast('已核销预约 ·《' + b.title + '》借出 · 应还 ' + due);
+        });
+      } else {
+        if (b.stock <= 0) { toast('该书在架 0 册，暂不能直接借出'); return; }
+        if ((db.loans || []).some(function (l) { return l.bookId === b.id; })) { toast('该书已在借阅中'); return; }
+        if ((db.loans || []).length >= 6) { toast('在借已达 6 册上限，请先归还'); return; }
+        var due2 = addDays(30);
+        YueDuDB.commit({ type: 'borrow', bookId: b.id,
+          loan: { id: uid('l'), bookId: b.id, title: b.title, due: due2, renewable: true, createdAt: Date.now() }
+        }).then(function () {
+          resetScan(); renderScan(); renderAll();
+          toast('借出办理完成 ·《' + b.title + '》应还 ' + due2);
+        });
+      }
+    } else {
+      var row = (db.loans || []).filter(function (l) { return l.bookId === b.id; })[0];
+      if (!row) { toast('这本书当前没有在借记录'); return; }
+      YueDuDB.commit({ type: 'return', loanId: row.id })
+        .then(function () {
+          resetScan(); renderScan(); renderAll();
+          toast('归还登记完成 ·《' + b.title + '》感谢爱护图书');
+        });
+    }
+  }
+
+  /* 取消借阅：撤销在借记录，库存即时回架 */
+  function cancelLoan(id) {
+    var l = (YueDuDB.get().loans || []).find(function (x) { return x.id === id; });
+    if (!l) return;
+    modal('取消借阅', '<p>确认取消《<b>' + esc(l.title) + '》的借阅？</b></p>' +
+      '<p>取消后该书即时回架，等同于完成一次归还登记。</p>',
+      [{ label: '确认取消借阅', primary: true, onClick: function () {
+          YueDuDB.commit({ type: 'cancel-loan', loanId: id })
+            .then(function () { toast('已取消借阅 ·《' + l.title + '》库存回架'); renderAll(); });
+      } }, { label: '再想想' }]);
   }
   function addWish(bookId) {
     var db = YueDuDB.get(), b = (db.books || []).find(function (x) { return x.id === bookId; });
@@ -379,21 +641,6 @@
     InkFX.qr($('#modalQr'), active.code);
   }
 
-  function showLoans() {
-    var db = YueDuDB.get(), loans = db.loans || [];
-    var picks = activePickups(db);
-    var pickPart = picks.length
-      ? '<p class="m-note" style="margin:0 0 6px">到馆预约 · 待办理（凭取书码到馆借出）</p><ul class="m-list">' +
-        picks.map(function (p) {
-          return '<li><span>《' + esc(p.title) + '》</span><span>取书码 ' + esc(p.code) + '</span></li>';
-        }).join('') + '</ul>'
-      : '';
-    modal('我的借阅', pickPart + (loans.length
-      ? '<ul class="m-list">' + loans.map(function (l) {
-          return '<li><span>《' + esc(l.title) + '》</span><span>应还 ' + esc(l.due) + ' · 剩余 ' + daysLeft(l.due) + ' 天</span></li>';
-        }).join('') + '</ul><div class="m-note">在借 ' + loans.length + ' 册 + 待办理 ' + picks.length + ' 册 · 合计最多 6 册 · 每册可续借一次（+14 天）。数据已写入共享数据库，其他访客可见库存变化。</div>'
-      : '<p>暂无在借图书。</p>'), [{ label: '去检索', primary: true, onClick: function () { location.hash = '#/search'; } }, { label: '关闭' }]);
-  }
   function showReservations() {
     var list = (YueDuDB.get().reservations || []).slice().reverse();
     modal('我的预约', list.length ? '<ul class="m-list">' + list.map(function (r) {
@@ -418,7 +665,7 @@
 
   /* ---------------- 路由 ---------------- */
   function switchPage(page, initial) {
-    if (['home', 'search', 'seat'].indexOf(page) < 0) page = 'home';
+    if (['home', 'search', 'seat', 'loans'].indexOf(page) < 0) page = 'home';
     if (!initial) InkFX.transition();
     S.page = page;
     $$('.page').forEach(function (p) { p.classList.toggle('is-active', p.dataset.page === page); });
@@ -431,6 +678,8 @@
     if (page === 'home') renderForecast();
     if (page === 'search') renderResults();
     if (page === 'seat') renderSeats();
+    if (page === 'loans') renderLoansPage();
+    else stopScanCam();
   }
   function route() {
     var page = (location.hash || '').replace(/^#\/?/, '').split('?')[0] || 'home';
@@ -495,6 +744,18 @@
       if (t.closest('[data-return]')) { returnBook(t.closest('[data-return]').dataset.return); return; }
       if (t.closest('[data-pickup]')) { showPickup(t.closest('[data-pickup]').dataset.pickup); return; }
       if (t.closest('[data-pickcancel]')) { cancelPickup(t.closest('[data-pickcancel]').dataset.pickcancel); return; }
+      if (t.closest('[data-loancancel]')) { cancelLoan(t.closest('[data-loancancel]').dataset.loancancel); return; }
+
+      var scb = t.closest('[data-scan]');
+      if (scb) {
+        var sv = scb.dataset.scan;
+        if (sv === 'mode') { S.scan.mode = scb.dataset.v; S.scan.matched = null; S.scan.error = null; S.scan.status = ''; renderScan(); return; }
+        if (sv === 'camStart') { startScanCam(); return; }
+        if (sv === 'camStop') { stopScanCam(); S.scan.matched = null; renderScan(); return; }
+        if (sv === 'camShot') { shotScanCam(); return; }
+        if (sv === 'manual') { manualLocate(); return; }
+        if (sv === 'confirm') { confirmScan(); return; }
+      }
 
       var act = t.closest('[data-action]');
       if (act) {
@@ -502,7 +763,7 @@
         if (act.tagName === 'A' || act.tagName === 'BUTTON') {
           if (['myloans', 'notices', 'checkin', 'help', 'advanced', 'myresv'].indexOf(a) >= 0) {
             e.preventDefault();
-            if (a === 'myloans') showLoans();
+            if (a === 'myloans') location.hash = '#/loans';
             else if (a === 'notices') showNotices();
             else if (a === 'checkin') checkIn();
             else if (a === 'myresv') showReservations();
@@ -516,6 +777,10 @@
     });
 
     $('#confirmResv').addEventListener('click', confirmResv);
+    document.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'scanFile') fileScan(e.target);
+    });
+    window.addEventListener('beforeunload', stopScanCam);
     $('#modal').addEventListener('click', function (e) { if (e.target === this) closeModal(); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 

@@ -1,0 +1,9 @@
+{
+  "name": "yuedu-library",
+  "version": "1.0.0",
+  "private": true,
+  "description": "悦读 · 数字藏书楼 —— 藏书检索、预约借阅·到馆办理、阅览选座与扫码借还",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

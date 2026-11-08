@@ -89,6 +89,7 @@
         db.loans.push(ev.loan);
         break;
       case 'return':
+      case 'cancel-loan':   /* 取消借阅：效果同归还（库存回架），事件类型区分用途 */
         i = db.loans.findIndex(function (x) { return x.id === ev.loanId; });
         if (i >= 0) {
           l = db.loans[i]; db.loans.splice(i, 1);

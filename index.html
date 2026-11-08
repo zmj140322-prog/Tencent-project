@@ -32,7 +32,7 @@
         <a href="#/home" data-route="home">首页</a>
         <a href="#/search" data-route="search">藏书检索</a>
         <a href="#/seat" data-route="seat">阅览选座</a>
-        <a href="#/home" data-action="myloans">我的借阅</a>
+        <a href="#/loans" data-route="loans">我的借阅</a>
         <a href="#/home" data-action="notices">馆讯</a>
       </nav>
 
@@ -73,7 +73,7 @@
 
       <section class="quick-bar" aria-label="快捷入口">
         <a class="quick-item" href="#/search"><span class="qi-icon qi-book"></span><span><strong>藏书检索</strong><small>书目 · 全文 · 索书号</small></span></a>
-        <a class="quick-item" href="#/home" data-action="myloans"><span class="qi-icon qi-return"></span><span><strong>借阅归还</strong><small>在借 · 续借 · 逾期办理</small></span></a>
+        <a class="quick-item" href="#/loans"><span class="qi-icon qi-return"></span><span><strong>借阅归还</strong><small>预约 · 扫码借还 · 续借</small></span></a>
         <a class="quick-item" href="#/seat"><span class="qi-icon qi-seat"></span><span><strong>阅览选座</strong><small>实时席位 · 在线预约</small></span></a>
         <a class="quick-item" href="#/home" data-action="checkin"><span class="qi-icon qi-check"></span><span><strong>到馆签到</strong><small>扫码签到 · 预约记录</small></span></a>
       </section>
@@ -143,7 +143,8 @@
             <section class="panel" id="loansPanel">
               <div class="panel-head">
                 <h2>我的借阅</h2>
-                <span class="panel-note">在借 2 册 · 最多 6 册</span>
+                <span class="panel-note" id="loansNote"></span>
+                <a class="link-more" href="#/loans">进入我的借阅 ›</a>
               </div>
               <ul class="loan-list" id="loanList"></ul>
             </section>
@@ -282,6 +283,77 @@
       </div>
     </main>
 
+    <!-- ============ 04 我的借阅 · 预约办理与扫码借还 ============ -->
+    <main class="page" id="page-loans" data-page="loans">
+      <div class="crumbs"><a href="#/home">首页</a><span>/</span><b>我的借阅</b></div>
+      <section class="search-intro">
+        <div>
+          <h1>我的借阅</h1>
+          <p id="loansPageNote">到馆预约 · 扫码借还 · 续借归还，集中办理</p>
+        </div>
+        <div class="intro-links">
+          <button data-action="myresv">我的选座预约</button><em>·</em>
+          <button data-action="checkin">到馆签到</button><em>·</em>
+          <button data-action="help">借阅规则</button>
+        </div>
+      </section>
+
+      <div class="scan-station">
+        <section class="panel scan-panel">
+          <div class="panel-head">
+            <h2><i class="tick"></i>扫码借还 · 工作人员操作台</h2>
+            <div class="mode-pills" id="scanModePills">
+              <button class="mode-pill on" data-scan="mode" data-v="borrow">借出登记</button>
+              <button class="mode-pill" data-scan="mode" data-v="return">归还登记</button>
+            </div>
+          </div>
+          <div class="scan-cam" id="scanCam">
+            <video id="scanVideo" autoplay playsinline muted></video>
+            <div class="cam-hint">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3.5"/></svg>
+              <span id="camHintText">先开启摄像头，将图书标签对准取景框<br>没有摄像头也可以直接上传标签照片</span>
+            </div>
+          </div>
+          <div class="scan-btns" id="scanBtns">
+            <button class="btn btn-primary" data-scan="camStart">开启摄像头</button>
+            <button class="btn btn-ghost file-btn">上传标签照片<input type="file" id="scanFile" accept="image/*"></button>
+          </div>
+          <div class="manual-locate">
+            <input id="scanManual" type="text" placeholder="识别不便？手动输入书名定位图书" autocomplete="off">
+            <button class="btn btn-outline" data-scan="manual">定 位</button>
+          </div>
+          <p class="scan-note">借出：扫描图书标签，系统自动核销最早的<b>到馆预约</b>并登记借出（借期 30 天）；无预约且在架时可直接办理。<br>归还：扫描标签识别图书，系统读取在借状态并完成<b>归还登记</b>。识别由视觉模型完成，识别不便时可用下方手动定位。</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2><i class="tick"></i>识别结果</h2>
+            <span class="panel-note" id="scanStateNote"></span>
+          </div>
+          <div id="scanResult" class="scan-result"></div>
+        </section>
+      </div>
+
+      <div class="loans-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2><i class="tick"></i>到馆预约 · 待办理</h2>
+            <span class="panel-note" id="pickupNote"></span>
+          </div>
+          <ul class="loan-list" id="pickupList"></ul>
+          <p class="list-foot" id="pickupFoot">凭取书码到馆，由工作人员扫码办理借出；取书码保留 3 天。</p>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2><i class="tick"></i>在借图书</h2>
+            <span class="panel-note" id="loanNote"></span>
+          </div>
+          <ul class="loan-list" id="loanFullList"></ul>
+          <p class="list-foot" id="loanFoot">每册可续借一次（+14 天）；如借错可「取消借阅」，库存即时回架。</p>
+        </section>
+      </div>
+    </main>
+
   </div>
 
   <footer class="site-footer">
@@ -291,7 +363,7 @@
         <span>藏书之雅 · 阅读之静</span>
         <small>馆址：文澜路 27 号 · 二层为古籍阅览室</small>
       </div>
-      <div class="footer-col"><h4>服务</h4><a href="#/search">馆藏检索</a><a href="#/home" data-action="myloans">借阅归还</a><a href="#/seat">阅览选座</a><a href="#/home" data-action="checkin">到馆签到</a></div>
+      <div class="footer-col"><h4>服务</h4><a href="#/search">馆藏检索</a><a href="#/loans">借阅归还</a><a href="#/seat">阅览选座</a><a href="#/home" data-action="checkin">到馆签到</a></div>
       <div class="footer-col"><h4>帮助</h4><a href="#/home" data-action="help">借阅规则</a><a href="#/home" data-action="help">检索指南</a><a href="#/home" data-action="help">预约须知</a><a href="#/home" data-action="help">意见反馈</a></div>
       <div class="footer-seal" aria-hidden="true">讀</div>
     </div>
